@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AdSkipper AI</string>
+    <string name="accessibility_service_label">AdSkipper AI — Tự động đóng quảng cáo</string>
+    <string name="accessibility_service_description">AdSkipper AI dùng YOLO on-device và Template Matching để nhận diện và tự động click đóng quảng cáo.</string>
+    <string name="channel_name">AdSkipper</string>
+    <string name="channel_desc">Dịch vụ nền nhận diện và đóng quảng cáo</string>
+</resources>

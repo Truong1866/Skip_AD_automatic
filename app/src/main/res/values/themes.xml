@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AdSkipper" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+        <item name="colorPrimary">#0A0A14</item>
+        <item name="colorPrimaryVariant">#06060D</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#00E5FF</item>
+        <item name="colorOnSecondary">#000000</item>
+        <item name="android:statusBarColor">@color/colorPrimary</item>
+        <item name="android:navigationBarColor">@color/colorPrimary</item>
+    </style>
+    <color name="colorPrimary">#0A0A14</color>
+    <color name="colorPrimaryDark">#06060D</color>
+    <color name="colorAccent">#00E5FF</color>
+</resources>

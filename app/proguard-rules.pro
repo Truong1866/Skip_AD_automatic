@@ -1,0 +1,3 @@
+-keep class com.adskipper.** { *; }
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**

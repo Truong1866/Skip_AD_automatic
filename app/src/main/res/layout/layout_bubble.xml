@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Bubble layout: vòng pulse bên ngoài + nền tròn + icon trung tâm + badge nhỏ
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="56dp"
+    android:layout_height="56dp">
+
+    <!-- Vòng pulse ngoài (animation) -->
+    <View
+        android:id="@+id/bubbleRing"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_gravity="center"
+        android:background="@drawable/bubble_ring" />
+
+    <!-- Nền tròn chính -->
+    <FrameLayout
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center"
+        android:background="@drawable/bubble_bg"
+        android:elevation="8dp">
+
+        <!-- Icon ⚡ -->
+        <TextView
+            android:id="@+id/bubbleIcon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="⚡"
+            android:textSize="22sp" />
+
+    </FrameLayout>
+
+    <!-- Badge đỏ khi vừa phát hiện -->
+    <FrameLayout
+        android:id="@+id/bubbleBadge"
+        android:layout_width="16dp"
+        android:layout_height="16dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="2dp"
+        android:layout_marginEnd="2dp"
+        android:background="@drawable/bubble_badge_bg"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="!"
+            android:textColor="#FFFFFF"
+            android:textSize="9sp"
+            android:textStyle="bold" />
+    </FrameLayout>
+
+</FrameLayout>

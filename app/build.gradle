@@ -1,0 +1,70 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.adskipper'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.adskipper"
+        minSdk 26
+        targetSdk 36
+        versionCode 2
+        versionName "2.0"
+
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    // SDK 36 yêu cầu Java 17 (không còn dùng Java 8)
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs = ['src/main/assets']
+        }
+    }
+
+    // Quan trọng với Gradle 9: packagingOptions đổi thành packaging
+    packaging {
+        resources {
+            excludes += ['META-INF/DEPENDENCIES']
+            pickFirsts += [
+                    'lib/arm64-v8a/libc++_shared.so',
+                    'lib/armeabi-v7a/libc++_shared.so'
+            ]
+        }
+        jniLibs {
+            pickFirsts += ['**/*.so']
+        }
+    }
+
+    aaptOptions {
+        noCompress "tflite"
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.cardview:cardview:1.0.0'
+    implementation 'androidx.core:core:1.15.0'
+    implementation 'androidx.activity:activity:1.9.3'
+
+    // TFLite
+    implementation 'org.tensorflow:tensorflow-lite:2.14.0'
+    implementation 'org.tensorflow:tensorflow-lite-gpu:2.14.0'
+    implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
+}
