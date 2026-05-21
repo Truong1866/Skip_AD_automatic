@@ -32,14 +32,14 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="YOLO On-Device · Template Match 1/4 · 1Hz Scan · 1s Delay"
+                android:text="YOLO On-Device · Template Match · 1Hz · Floating Bubble"
                 android:textSize="11sp"
                 android:textColor="#556688"
                 android:gravity="center"
                 android:layout_marginTop="4dp" />
         </LinearLayout>
 
-        <!-- ── STATUS ────────────────────────────────────────────────── -->
+        <!-- ── STATUS CARD ───────────────────────────────────────────── -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -71,10 +71,11 @@
                         android:layout_height="9dp" android:background="@drawable/dot_red" />
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
                         android:layout_weight="1" android:text="Accessibility Service"
-                        android:textColor="#AABBCC" android:textSize="13sp" android:layout_marginStart="10dp" />
-                    <TextView android:id="@+id/txtAccessibilityStatus" android:layout_width="wrap_content"
-                        android:layout_height="wrap_content" android:text="Chưa bật"
-                        android:textColor="#FF8844" android:textSize="12sp" />
+                        android:textColor="#AABBCC" android:textSize="13sp"
+                        android:layout_marginStart="10dp" />
+                    <TextView android:id="@+id/txtAccessibilityStatus"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Chưa bật" android:textColor="#FF8844" android:textSize="12sp" />
                 </LinearLayout>
 
                 <!-- Screen Capture -->
@@ -85,24 +86,41 @@
                         android:layout_height="9dp" android:background="@drawable/dot_red" />
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
                         android:layout_weight="1" android:text="Chụp màn hình (MediaProjection)"
-                        android:textColor="#AABBCC" android:textSize="13sp" android:layout_marginStart="10dp" />
-                    <TextView android:id="@+id/txtCaptureStatus" android:layout_width="wrap_content"
-                        android:layout_height="wrap_content" android:text="Chưa cấp"
-                        android:textColor="#FF8844" android:textSize="12sp" />
+                        android:textColor="#AABBCC" android:textSize="13sp"
+                        android:layout_marginStart="10dp" />
+                    <TextView android:id="@+id/txtCaptureStatus"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Chưa cấp" android:textColor="#FF8844" android:textSize="12sp" />
                 </LinearLayout>
 
-                <!-- AI -->
+                <!-- Overlay (SYSTEM_ALERT_WINDOW) -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:gravity="center_vertical"
+                    android:layout_marginTop="8dp">
+                    <View android:id="@+id/dotOverlay" android:layout_width="9dp"
+                        android:layout_height="9dp" android:background="@drawable/dot_red" />
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Hiển thị trên ứng dụng khác"
+                        android:textColor="#AABBCC" android:textSize="13sp"
+                        android:layout_marginStart="10dp" />
+                    <TextView android:id="@+id/txtOverlayStatus"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Chưa cấp" android:textColor="#FF8844" android:textSize="12sp" />
+                </LinearLayout>
+
+                <!-- AI / YOLO -->
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:gravity="center_vertical"
                     android:layout_marginTop="8dp">
                     <View android:id="@+id/dotAI" android:layout_width="9dp"
                         android:layout_height="9dp" android:background="@drawable/dot_green" />
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="YOLO Model (best.onnx)"
-                        android:textColor="#AABBCC" android:textSize="13sp" android:layout_marginStart="10dp" />
-                    <TextView android:id="@+id/txtAIStatus" android:layout_width="wrap_content"
-                        android:layout_height="wrap_content" android:text="On-Device"
-                        android:textColor="#44FF88" android:textSize="12sp" />
+                        android:layout_weight="1" android:text="YOLO Model (best.tflite)"
+                        android:textColor="#AABBCC" android:textSize="13sp"
+                        android:layout_marginStart="10dp" />
+                    <TextView android:id="@+id/txtAIStatus"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="On-Device" android:textColor="#44FF88" android:textSize="12sp" />
                 </LinearLayout>
 
             </LinearLayout>
@@ -126,7 +144,6 @@
 
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:gravity="center_vertical">
-
                     <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
                         android:layout_weight="1" android:orientation="vertical">
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -134,18 +151,14 @@
                             android:textSize="10sp" android:textColor="#00E5FF"
                             android:textStyle="bold" android:letterSpacing="0.15" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                            android:text="So khớp ở 1/4 độ phân giải · Click vào phần trên tìm thấy"
+                            android:text="So khớp ở 1/4 độ phân giải"
                             android:textSize="10sp" android:textColor="#556688"
                             android:layout_marginTop="2dp" />
                     </LinearLayout>
-
-                    <TextView
-                        android:id="@+id/txtTemplateCount"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
+                    <TextView android:id="@+id/txtTemplateCount"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
                         android:text="0 ảnh"
-                        android:textColor="#00E5FF"
-                        android:textSize="12sp"
+                        android:textColor="#00E5FF" android:textSize="12sp"
                         android:background="@drawable/badge_bg"
                         android:paddingStart="8dp" android:paddingEnd="8dp"
                         android:paddingTop="4dp" android:paddingBottom="4dp" />
@@ -153,34 +166,24 @@
 
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:layout_marginTop="12dp">
-
-                    <Button
-                        android:id="@+id/btnAddTemplate"
-                        android:layout_width="0dp"
-                        android:layout_height="44dp"
+                    <Button android:id="@+id/btnAddTemplate"
+                        android:layout_width="0dp" android:layout_height="44dp"
                         android:layout_weight="1"
                         android:text="+ Thêm ảnh so khớp"
-                        android:textColor="#000000"
-                        android:textSize="12sp"
+                        android:textColor="#000000" android:textSize="12sp"
                         android:backgroundTint="#00E5FF"
                         android:layout_marginEnd="8dp" />
-
-                    <Button
-                        android:id="@+id/btnClearTemplates"
-                        android:layout_width="wrap_content"
-                        android:layout_height="44dp"
+                    <Button android:id="@+id/btnClearTemplates"
+                        android:layout_width="wrap_content" android:layout_height="44dp"
                         android:text="Xóa"
-                        android:textColor="#FF6666"
-                        android:backgroundTint="#1A0A0A" />
-
+                        android:textColor="#FF6666" android:backgroundTint="#1A0A0A" />
                 </LinearLayout>
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="💡 Chụp ảnh phần UI bạn muốn click (vd: nút Chơi, icon game...). App sẽ tự click khi thấy ảnh xuất hiện trên màn hình."
-                    android:textColor="#445566"
-                    android:textSize="11sp"
+                    android:text="💡 Chụp ảnh phần UI muốn click. App tự click khi thấy ảnh đó trên màn hình."
+                    android:textColor="#445566" android:textSize="11sp"
                     android:layout_marginTop="8dp"
                     android:lineSpacingMultiplier="1.4" />
 
@@ -204,22 +207,40 @@
                     android:textSize="10sp" android:textColor="#00E5FF"
                     android:textStyle="bold" android:letterSpacing="0.15" />
 
+                <!-- Bước 1: Accessibility -->
                 <Button android:id="@+id/btnAccessibility"
                     android:layout_width="match_parent" android:layout_height="48dp"
                     android:text="1. Bật Accessibility Service →"
                     android:textColor="#AABBCC" android:backgroundTint="#1A1A2E"
                     android:layout_marginTop="12dp" />
 
+                <!-- Bước 2: Screen Capture -->
                 <Button android:id="@+id/btnScreenCapture"
                     android:layout_width="match_parent" android:layout_height="48dp"
                     android:text="2. Cấp quyền chụp màn hình →"
                     android:textColor="#AABBCC" android:backgroundTint="#1A1A2E"
                     android:layout_marginTop="6dp" />
 
+                <!-- Bước 3: Overlay permission (quan trọng cho bubble) -->
+                <Button android:id="@+id/btnOverlayPermission"
+                    android:layout_width="match_parent" android:layout_height="48dp"
+                    android:text="3. Cấp quyền hiển thị trên app khác →"
+                    android:textColor="#AABBCC" android:backgroundTint="#1A1A2E"
+                    android:layout_marginTop="6dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="⚠️ Bước 3 bắt buộc để floating bubble hoạt động khi dùng app khác"
+                    android:textColor="#886600"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"
+                    android:layout_marginBottom="8dp" />
+
                 <!-- Options -->
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:gravity="center_vertical"
-                    android:layout_marginTop="14dp">
+                    android:layout_marginTop="6dp">
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
                         android:layout_weight="1" android:text="Hiển thị overlay khi phát hiện"
                         android:textColor="#AABBCC" android:textSize="13sp" />
@@ -234,10 +255,10 @@
                     <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
                         android:layout_weight="1" android:orientation="vertical">
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                            android:text="Ưu tiên YOLO on-device" android:textColor="#AABBCC"
-                            android:textSize="13sp" />
+                            android:text="Ưu tiên YOLO on-device"
+                            android:textColor="#AABBCC" android:textSize="13sp" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                            android:text="(tắt để dùng Template/Claude fallback trước)"
+                            android:text="(tắt để dùng Template/Claude trước)"
                             android:textColor="#445566" android:textSize="10sp" />
                     </LinearLayout>
                     <androidx.appcompat.widget.SwitchCompat android:id="@+id/switchYolo"
@@ -268,7 +289,7 @@
                         android:textSize="10sp" android:textColor="#667788"
                         android:textStyle="bold" android:letterSpacing="0.1" />
                     <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                        android:text="chỉ dùng nếu YOLO+Template đều fail"
+                        android:text="chỉ dùng nếu YOLO+Template fail"
                         android:textColor="#334455" android:textSize="9sp" />
                 </LinearLayout>
 
@@ -340,6 +361,7 @@
                     android:layout_marginTop="8dp"
                     android:minLines="6"
                     android:lineSpacingMultiplier="1.3" />
+
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 

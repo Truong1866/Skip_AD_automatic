@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Panel điều khiển: hiển thị khi nhấn vào bubble
-    Có nút Pause/Resume, Stop, và thông tin trạng thái
+    Nút Pause/Resume, Stop, và thông tin trạng thái + số lần click
 -->
 <androidx.cardview.widget.CardView
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="200dp"
+    android:layout_width="210dp"
     android:layout_height="wrap_content"
-    app:cardBackgroundColor="#E8111827"
+    app:cardBackgroundColor="#F0111827"
     app:cardCornerRadius="18dp"
-    app:cardElevation="16dp">
+    app:cardElevation="20dp">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -24,13 +24,13 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="10dp">
+            android:layout_marginBottom="8dp">
 
             <TextView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="⚡ AdSkipper"
+                android:text="⚡ AdSkipper AI"
                 android:textColor="#00E5FF"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -38,36 +38,57 @@
             <!-- Nút đóng panel -->
             <TextView
                 android:id="@+id/btnClosePanel"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
                 android:gravity="center"
                 android:text="✕"
-                android:textColor="#445566"
+                android:textColor="#557799"
                 android:textSize="12sp"
-                android:background="@drawable/btn_close_bg" />
-
+                android:background="@drawable/btn_close_bg"
+                android:clickable="true"
+                android:focusable="true" />
         </LinearLayout>
 
-        <!-- Status -->
+        <!-- Divider mỏng -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1A3040"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Status text -->
         <TextView
             android:id="@+id/panelStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Đang quét 1Hz..."
-            android:textColor="#7799BB"
+            android:textColor="#6699BB"
             android:textSize="10sp"
             android:layout_marginBottom="4dp" />
 
-        <!-- Click count -->
-        <TextView
-            android:id="@+id/panelClickCount"
+        <!-- Click count badge -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Đã đóng: 0 quảng cáo"
-            android:textColor="#44FF88"
-            android:textSize="11sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="12dp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="10dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="✅ "
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/panelClickCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Đã đóng: 0 quảng cáo"
+                android:textColor="#44FF88"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
 
         <!-- Divider -->
         <View
@@ -80,7 +101,7 @@
         <LinearLayout
             android:id="@+id/btnPauseResume"
             android:layout_width="match_parent"
-            android:layout_height="40dp"
+            android:layout_height="42dp"
             android:orientation="horizontal"
             android:gravity="center"
             android:background="@drawable/panel_btn_bg"
@@ -93,7 +114,9 @@
                 android:layout_width="18dp"
                 android:layout_height="18dp"
                 android:src="@android:drawable/ic_media_pause"
-                android:layout_marginEnd="8dp" />
+                android:color="#FFAA00"
+                android:layout_marginEnd="8dp"
+                android:scaleType="fitCenter" />
 
             <TextView
                 android:id="@+id/btnPauseResumeText"
@@ -103,14 +126,13 @@
                 android:textColor="#FFFFFF"
                 android:textSize="13sp"
                 android:textStyle="bold" />
-
         </LinearLayout>
 
         <!-- Stop button -->
         <LinearLayout
             android:id="@+id/btnStop"
             android:layout_width="match_parent"
-            android:layout_height="36dp"
+            android:layout_height="38dp"
             android:orientation="horizontal"
             android:gravity="center"
             android:background="@drawable/panel_btn_stop_bg"
@@ -123,7 +145,6 @@
                 android:text="⏹  Dừng hẳn"
                 android:textColor="#FF5555"
                 android:textSize="12sp" />
-
         </LinearLayout>
 
     </LinearLayout>

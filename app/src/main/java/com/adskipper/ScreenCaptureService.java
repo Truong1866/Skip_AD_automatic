@@ -5,7 +5,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
@@ -19,11 +18,12 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.WindowManager;
-
 import android.view.WindowMetrics;
+
 import androidx.core.app.NotificationCompat;
 
 import java.nio.ByteBuffer;
@@ -33,66 +33,81 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Core service:
- * - Chụp màn hình 1Hz (1 lần/giây, full resolution)
- * - Chạy YOLO on-device → tìm nút X quảng cáo
- * - Chạy Template Matching 1/4 resolution → tìm hình ảnh tham chiếu
- * - Khi phát hiện → đợi 1 giây → thực hiện click
+ * ScreenCaptureService — service lõi chạy nền.
+ *
+ * Pipeline:
+ *   1Hz capture → YOLO on-device → Template Matching → Claude API fallback
+ *   Phát hiện → đợi 1s → click qua AccessibilityService
+ *   Thông báo kết quả lên FloatingBubble
+ *
+ * Hỗ trợ ACTION_PAUSE / ACTION_RESUME / ACTION_STOP từ FloatingBubbleManager.
  */
 public class ScreenCaptureService extends Service {
 
-    private static final String TAG = "ScreenCapture";
+    private static final String TAG        = "ScreenCapture";
     private static final String CHANNEL_ID = "AdSkipperCh";
-    private static final int NOTIF_ID = 1001;
+    private static final int    NOTIF_ID   = 1001;
 
-    // Cố định 1Hz như yêu cầu
-    private static final long SCAN_INTERVAL_MS = 1000L;
-    // Delay 1s trước khi click sau khi phát hiện
-    private static final long ACTION_DELAY_MS = 1000L;
+    private static final long SCAN_INTERVAL_MS = 1000L;  // 1Hz
+    private static final long ACTION_DELAY_MS  = 1000L;  // 1s trước khi click
 
-    // Static state từ MainActivity
-    private static int sResultCode = 0;
-    private static Intent sResultData = null;
-    private static boolean sShowOverlay = true;
+    // ── Static projection data (set từ MainActivity) ─────────────────
+    private static int     sResultCode = 0;
+    private static Intent  sResultData = null;
 
     public static void setProjectionData(int code, Intent data) {
         sResultCode = code;
         sResultData = data;
     }
 
-    private MediaProjection mediaProjection;
-    private VirtualDisplay virtualDisplay;
-    private ImageReader imageReader;
+    // ── Singleton ─────────────────────────────────────────────────────
+    private static ScreenCaptureService instance;
+    public  static ScreenCaptureService getInstance() { return instance; }
+
+    // ── MediaProjection ───────────────────────────────────────────────
+    private MediaProjection  mediaProjection;
+    private VirtualDisplay   virtualDisplay;
+    private ImageReader      imageReader;
     private int screenW, screenH, screenDpi;
 
-    private Handler mainHandler;
-    private ExecutorService inferenceThread;  // Single thread cho YOLO
-    private final AtomicBoolean isProcessing = new AtomicBoolean(false);
+    // ── Threading ─────────────────────────────────────────────────────
+    private Handler         mainHandler;
+    private ExecutorService inferenceThread;
+    private final AtomicBoolean isProcessing  = new AtomicBoolean(false);
     private final AtomicBoolean pendingAction = new AtomicBoolean(false);
+
+    // ── State ─────────────────────────────────────────────────────────
     private volatile boolean running = false;
+    private volatile boolean paused  = false;
 
-    // AI engines
-    private YoloDetector yoloDetector;
-    private TemplateMatcher templateMatcher;
-
-    // Pending click info
-    private volatile float pendingX, pendingY;
+    private volatile float  pendingX, pendingY;
     private volatile String pendingSource;
 
-    // Scan loop
+    // ── AI engines ────────────────────────────────────────────────────
+    private YoloDetector    yoloDetector;
+    private TemplateMatcher templateMatcher;
+
+    // ── Floating Bubble ───────────────────────────────────────────────
+    private FloatingBubbleManager bubble;
+
+    // ── Scan loop ─────────────────────────────────────────────────────
     private final Runnable scanLoop = new Runnable() {
-        @Override
-        public void run() {
+        @Override public void run() {
             if (!running) return;
-            captureAndProcess();
+            if (!paused) captureAndProcess();
             mainHandler.postDelayed(this, SCAN_INTERVAL_MS);
         }
     };
 
+    // ─────────────────────────────────────────────────────────────────
+    // LIFECYCLE
+    // ─────────────────────────────────────────────────────────────────
+
     @Override
     public void onCreate() {
         super.onCreate();
-        mainHandler = new Handler(Looper.getMainLooper());
+        instance     = this;
+        mainHandler  = new Handler(Looper.getMainLooper());
         inferenceThread = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "AdSkipper-Inference");
             t.setPriority(Thread.NORM_PRIORITY);
@@ -103,88 +118,152 @@ public class ScreenCaptureService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        sShowOverlay = intent != null && intent.getBooleanExtra("showOverlay", true);
+
+        // ── Handle actions từ FloatingBubble ─────────────────────────
+        if (intent != null) {
+            String action = intent.getAction();
+            if (FloatingBubbleManager.ACTION_PAUSE.equals(action)) {
+                paused = true;
+                log("⏸ Tạm dừng quét");
+                updateNotif("⏸ Đã tạm dừng");
+                if (bubble != null) bubble.updateStatus("⏸ Đang tạm dừng");
+                return START_STICKY;
+            }
+            if (FloatingBubbleManager.ACTION_RESUME.equals(action)) {
+                paused = false;
+                log("▶️ Tiếp tục quét");
+                updateNotif("🟢 Đang quét 1Hz...");
+                if (bubble != null) bubble.updateStatus("🟢 Đang quét 1Hz...");
+                return START_STICKY;
+            }
+            if (FloatingBubbleManager.ACTION_STOP.equals(action)) {
+                log("⏹ Nhận lệnh dừng từ bubble");
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+        }
+
+        // ── Khởi động lần đầu ────────────────────────────────────────
         startForeground(NOTIF_ID, buildNotif("Đang khởi động..."));
 
         if (sResultCode == 0 || sResultData == null) {
-            log("❌ Thiếu quyền MediaProjection"); stopSelf(); return START_NOT_STICKY;
+            log("❌ Thiếu quyền MediaProjection");
+            stopSelf();
+            return START_NOT_STICKY;
         }
 
-        // Init AI engines
         initAI();
         initCapture();
+        initBubble();
 
         running = true;
-        mainHandler.postDelayed(scanLoop, 500);
-        log("🟢 Dịch vụ bắt đầu — quét 1Hz, click sau 1s");
-        updateNotif("Đang quét 1Hz...");
+        mainHandler.postDelayed(scanLoop, 800);
+        log("🟢 Bắt đầu — 1Hz scan, click sau 1s");
+        updateNotif("🟢 Đang quét 1Hz...");
         return START_STICKY;
     }
 
+    @Override
+    public void onDestroy() {
+        running = false;
+        instance = null;
+        mainHandler.removeCallbacksAndMessages(null);
+        inferenceThread.shutdown();
+
+        // Dừng và xóa bubble
+        if (bubble != null) {
+            bubble.hide();
+            bubble = null;
+        }
+
+        // Giải phóng capture resources
+        if (yoloDetector   != null) yoloDetector.close();
+        if (virtualDisplay != null) virtualDisplay.release();
+        if (imageReader    != null) imageReader.close();
+        if (mediaProjection != null) mediaProjection.stop();
+
+        log("🔴 Dịch vụ đã dừng");
+        super.onDestroy();
+    }
+
+    @Override public IBinder onBind(Intent intent) { return null; }
+
+    // ─────────────────────────────────────────────────────────────────
+    // INIT
+    // ─────────────────────────────────────────────────────────────────
+
     private void initAI() {
-        // YOLO on-device
         yoloDetector = new YoloDetector();
-        boolean yoloOk = yoloDetector.init(this);
-        if (yoloOk) {
+        boolean ok = yoloDetector.init(this);
+        if (ok) {
             log("✅ YOLO model loaded (on-device)");
         } else {
-            log("⚠️ Không load được YOLO model → dùng Claude API fallback");
+            log("⚠️ Không load được YOLO → dùng Template/Claude fallback");
             yoloDetector = null;
         }
 
-        // Template matcher
         templateMatcher = new TemplateMatcher();
         log("✅ Template matcher sẵn sàng (" + templateMatcher.getTemplateCount() + " templates)");
     }
 
     private void initCapture() {
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        DisplayMetrics dm = new DisplayMetrics();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             WindowMetrics metrics = wm.getCurrentWindowMetrics();
-            screenW = metrics.getBounds().width();
-            screenH = metrics.getBounds().height();
+            screenW   = metrics.getBounds().width();
+            screenH   = metrics.getBounds().height();
             screenDpi = getResources().getDisplayMetrics().densityDpi;
         } else {
-            dm = new DisplayMetrics();
+            DisplayMetrics dm = new DisplayMetrics();
             wm.getDefaultDisplay().getRealMetrics(dm);
-            screenW = dm.widthPixels;
-            screenH = dm.heightPixels;
+            screenW   = dm.widthPixels;
+            screenH   = dm.heightPixels;
             screenDpi = dm.densityDpi;
         }
-        screenW = dm.widthPixels;
-        screenH = dm.heightPixels;
-        screenDpi = dm.densityDpi;
 
         MediaProjectionManager mpm =
             (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         mediaProjection = mpm.getMediaProjection(sResultCode, new Intent(sResultData));
 
-        // ImageReader với full resolution (không giảm chất lượng đầu vào)
         imageReader = ImageReader.newInstance(screenW, screenH, PixelFormat.RGBA_8888, 2);
-
         virtualDisplay = mediaProjection.createVirtualDisplay(
             "AdSkipperVD", screenW, screenH, screenDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader.getSurface(), null, null
         );
-        Log.d(TAG, "Capture init: " + screenW + "x" + screenH + " @" + screenDpi + "dpi");
+        Log.d(TAG, "Capture init: " + screenW + "x" + screenH + " @" + screenDpi);
     }
 
-    // ─── Capture + Process ─────────────────────────────────────────────
+    /**
+     * Khởi tạo FloatingBubble — chỉ khi có SYSTEM_ALERT_WINDOW permission.
+     */
+    private void initBubble() {
+        if (!Settings.canDrawOverlays(this)) {
+            log("⚠️ Chưa có quyền SYSTEM_ALERT_WINDOW — bỏ qua bubble");
+            return;
+        }
+        mainHandler.post(() -> {
+            bubble = new FloatingBubbleManager(this);
+            bubble.show();
+            log("🫧 Floating bubble đã hiển thị");
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // CAPTURE + PROCESS
+    // ─────────────────────────────────────────────────────────────────
 
     private void captureAndProcess() {
-        if (isProcessing.getAndSet(true)) return; // skip if previous frame still running
+        if (isProcessing.getAndSet(true)) return;
 
         Bitmap frame = captureFrame();
         if (frame == null) { isProcessing.set(false); return; }
 
-        final Bitmap finalFrame = frame;
         inferenceThread.submit(() -> {
             try {
-                processFrame(finalFrame);
+                processFrame(frame);
             } finally {
-                finalFrame.recycle();
+                frame.recycle();
                 isProcessing.set(false);
             }
         });
@@ -195,11 +274,11 @@ public class ScreenCaptureService extends Service {
             Image img = imageReader.acquireLatestImage();
             if (img == null) return null;
 
-            Image.Plane[] planes = img.getPlanes();
-            ByteBuffer buf = planes[0].getBuffer();
+            Image.Plane[] planes  = img.getPlanes();
+            ByteBuffer    buf     = planes[0].getBuffer();
             int pixelStride = planes[0].getPixelStride();
             int rowStride   = planes[0].getRowStride();
-            int rowPad = rowStride - pixelStride * screenW;
+            int rowPad      = rowStride - pixelStride * screenW;
 
             Bitmap bmp = Bitmap.createBitmap(
                 screenW + rowPad / pixelStride, screenH, Bitmap.Config.ARGB_8888);
@@ -219,39 +298,39 @@ public class ScreenCaptureService extends Service {
     }
 
     /**
-     * Xử lý frame:
-     * 1. YOLO on-device (ưu tiên)
-     * 2. Template matching
-     * 3. Claude API fallback (nếu có key và cả 2 trên fail)
+     * Xử lý frame theo thứ tự ưu tiên:
+     *   1. YOLO on-device
+     *   2. Template matching
+     *   3. Claude API fallback
      */
     private void processFrame(Bitmap frame) {
-        if (pendingAction.get()) return; // đang chờ click, bỏ qua frame này
+        if (pendingAction.get()) return;
 
-        // ── 1. YOLO on-device ──────────────────────────────────────────
+        // 1. YOLO
         if (yoloDetector != null) {
             List<YoloDetector.Detection> detections = yoloDetector.detect(frame);
             if (!detections.isEmpty()) {
                 YoloDetector.Detection best = detections.get(0);
-                for (YoloDetector.Detection d : detections) {
+                for (YoloDetector.Detection d : detections)
                     if (d.confidence > best.confidence) best = d;
-                }
                 log("🎯 YOLO: " + best);
                 scheduleClick(best.centerX(), best.centerY(), "YOLO:" + best.label, best.confidence);
                 return;
             }
         }
 
-        // ── 2. Template matching ───────────────────────────────────────
-        if (templateMatcher.getTemplateCount() > 0) {
+        // 2. Template matching
+        if (templateMatcher != null && templateMatcher.getTemplateCount() > 0) {
             TemplateMatcher.MatchResult match = templateMatcher.match(frame);
             if (match.matched) {
-                log(String.format("🖼️ Template match: %s (%.0f%%)", match.templateName, match.score * 100));
-                scheduleClick(match.centerXRatio, match.centerYRatio, "TPL:" + match.templateName, match.score);
+                log(String.format("🖼️ Template: %s (%.0f%%)", match.templateName, match.score * 100));
+                scheduleClick(match.centerXRatio, match.centerYRatio,
+                    "TPL:" + match.templateName, match.score);
                 return;
             }
         }
 
-        // ── 3. Claude API fallback ─────────────────────────────────────
+        // 3. Claude API fallback
         if (ClaudeVisionClient.hasApiKey()) {
             ClaudeVisionClient.AdDetectionResult r = ClaudeVisionClient.analyzeScreenshot(frame);
             if (r.hasCloseButton && r.confidence >= 0.70f) {
@@ -262,70 +341,53 @@ public class ScreenCaptureService extends Service {
     }
 
     /**
-     * Lên lịch click sau 1 giây từ khi phát hiện
+     * Lên lịch click sau ACTION_DELAY_MS (1 giây) từ khi phát hiện.
+     * Thông báo bubble ngay lập tức (badge).
      */
     private void scheduleClick(float x, float y, String source, float confidence) {
         if (pendingAction.getAndSet(true)) return;
 
-        pendingX = x;
-        pendingY = y;
+        pendingX      = x;
+        pendingY      = y;
         pendingSource = source;
 
-        log(String.format("⏱️ Phát hiện [%s] conf=%.0f%% → click sau 1s tại (%.3f, %.3f)",
+        log(String.format("⏱️ [%s] conf=%.0f%% → click sau 1s @ (%.3f,%.3f)",
             source, confidence * 100, x, y));
         updateNotif("Phát hiện! Click sau 1s...");
+
+        // Hiện badge ngay trên bubble
+        if (bubble != null) mainHandler.post(() -> bubble.onAdClicked());
 
         mainHandler.postDelayed(() -> {
             AdSkipperAccessibilityService a11y = AdSkipperAccessibilityService.getInstance();
             if (a11y != null) {
                 a11y.performClickRatio(pendingX, pendingY);
-                log("👆 Đã click [" + pendingSource + "] tại (" +
-                    String.format("%.3f, %.3f)", pendingX, pendingY));
-                updateNotif("✅ Đã đóng quảng cáo!");
+                log("👆 Click [" + pendingSource + "] @ ("
+                    + String.format("%.3f,%.3f", pendingX, pendingY) + ")");
+                updateNotif("✅ Đã đóng QC #" +
+                    (bubble != null ? bubble.getClickCount() : "?"));
             } else {
                 log("⚠️ Accessibility Service chưa kết nối");
+                updateNotif("⚠️ Cần bật Accessibility Service");
             }
-            pendingAction.set(false);
 
-            // Sau click, đợi thêm 1s trước khi quét lại
-            mainHandler.postDelayed(() -> updateNotif("Đang quét 1Hz..."), 1000);
+            pendingAction.set(false);
+            mainHandler.postDelayed(() -> {
+                if (running && !paused)
+                    updateNotif("🟢 Đang quét 1Hz...");
+            }, 1500);
+
         }, ACTION_DELAY_MS);
     }
 
-    // ─── Notification ──────────────────────────────────────────────────
-    private void createChannel() {
-        NotificationChannel ch = new NotificationChannel(
-            CHANNEL_ID, "AdSkipper", NotificationManager.IMPORTANCE_LOW);
-        ch.setSound(null, null);
-        getSystemService(NotificationManager.class).createNotificationChannel(ch);
-    }
+    // ─────────────────────────────────────────────────────────────────
+    // TEMPLATE MANAGEMENT (gọi từ MainActivity)
+    // ─────────────────────────────────────────────────────────────────
 
-    private Notification buildNotif(String text) {
-        PendingIntent pi = PendingIntent.getActivity(this, 0,
-            new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("⚡ AdSkipper AI")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_close_clear_cancel)
-            .setContentIntent(pi).setOngoing(true).setSilent(true).build();
-    }
-
-    private void updateNotif(String text) {
-        getSystemService(NotificationManager.class).notify(NOTIF_ID, buildNotif(text));
-    }
-
-    private void log(String msg) {
-        Log.d(TAG, msg);
-        Intent i = new Intent(MainActivity.ACTION_LOG);
-        i.putExtra(MainActivity.EXTRA_LOG_MSG, msg);
-        sendBroadcast(i);
-    }
-
-    // ─── Template management (called from MainActivity) ────────────────
     public void addTemplate(String name, Bitmap bmp) {
         if (templateMatcher != null) {
             templateMatcher.addTemplate(name, bmp);
-            log("📷 Đã thêm template: " + name);
+            log("📷 Template thêm: " + name);
         }
     }
 
@@ -336,29 +398,44 @@ public class ScreenCaptureService extends Service {
         }
     }
 
-    public static ScreenCaptureService instance;
+    // ─────────────────────────────────────────────────────────────────
+    // NOTIFICATION
+    // ─────────────────────────────────────────────────────────────────
 
-    @Override
-    protected void attachBaseContext(Context base) {
-        super.attachBaseContext(base);
+    private void createChannel() {
+        NotificationChannel ch = new NotificationChannel(
+            CHANNEL_ID, "AdSkipper", NotificationManager.IMPORTANCE_LOW);
+        ch.setSound(null, null);
+        getSystemService(NotificationManager.class).createNotificationChannel(ch);
     }
 
-    @Override
-    public void onDestroy() {
-        running = false;
-        instance = null;
-        mainHandler.removeCallbacks(scanLoop);
-        inferenceThread.shutdown();
-        if (yoloDetector != null) yoloDetector.close();
-        if (virtualDisplay != null) virtualDisplay.release();
-        if (imageReader != null) imageReader.close();
-        if (mediaProjection != null) mediaProjection.stop();
-        log("🔴 Dịch vụ đã dừng");
-        super.onDestroy();
+    private Notification buildNotif(String text) {
+        PendingIntent pi = PendingIntent.getActivity(this, 0,
+            new Intent(this, MainActivity.class),
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("⚡ AdSkipper AI")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_menu_close_clear_cancel)
+            .setContentIntent(pi)
+            .setOngoing(true)
+            .setSilent(true)
+            .build();
     }
 
-    @Override public IBinder onBind(Intent intent) { return null; }
+    private void updateNotif(String text) {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm != null) nm.notify(NOTIF_ID, buildNotif(text));
+    }
 
-    // Allow MainActivity to reference this service
-    public static ScreenCaptureService getInstance() { return instance; }
+    // ─────────────────────────────────────────────────────────────────
+    // LOGGING
+    // ─────────────────────────────────────────────────────────────────
+
+    private void log(String msg) {
+        Log.d(TAG, msg);
+        Intent i = new Intent(MainActivity.ACTION_LOG);
+        i.putExtra(MainActivity.EXTRA_LOG_MSG, msg);
+        sendBroadcast(i);
+    }
 }

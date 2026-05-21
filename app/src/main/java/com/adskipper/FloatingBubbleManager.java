@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -22,96 +23,106 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 /**
- * Floating Bubble — hiển thị bong bóng nổi lên trên mọi app.
+ * FloatingBubbleManager — hiển thị bong bóng nổi lên trên MỌI app.
+ *
+ * Yêu cầu permission: SYSTEM_ALERT_WINDOW (đã khai báo trong Manifest).
+ * Cần gọi Settings.canDrawOverlays(context) trước khi show().
  *
  * Hành vi:
- * - Bong bóng tròn nhỏ, kéo thả được, tự snap vào cạnh trái/phải
- * - Nhấn một lần  → mở panel điều khiển (Pause/Resume + trạng thái)
- * - Panel tự đóng sau 4s không tương tác
- * - Pulse animation khi đang chạy, tĩnh khi pause
- * - Hiển thị badge khi vừa phát hiện và click quảng cáo
+ *  - Bong bóng tròn, kéo thả, tự snap vào cạnh trái/phải
+ *  - Tap ngắn → mở panel điều khiển (Pause/Resume + trạng thái + số lần đóng QC)
+ *  - Panel tự đóng sau 4s không tương tác
+ *  - Pulse animation khi đang chạy, tĩnh khi pause
+ *  - Badge đỏ "!" khi vừa phát hiện & click QC (hiện 2s rồi tắt)
+ *  - Click count được cập nhật realtime trên panel
  */
 public class FloatingBubbleManager {
+
+    private static final String TAG = "BubbleManager";
 
     // Actions gửi đến ScreenCaptureService
     public static final String ACTION_PAUSE  = "com.adskipper.PAUSE";
     public static final String ACTION_RESUME = "com.adskipper.RESUME";
     public static final String ACTION_STOP   = "com.adskipper.STOP";
 
-    private final Context        context;
-    private final WindowManager  wm;
-    private       View           bubbleView;
-    private       View           panelView;
-    private       boolean        panelVisible = false;
-    private       boolean        isPaused     = false;
-    private       boolean        attached     = false;
+    private final Context       context;
+    private final WindowManager wm;
+
+    private View    bubbleView;
+    private View    panelView;
+
+    private boolean panelVisible = false;
+    private boolean isPaused     = false;
+    private boolean attached     = false;
+
+    private int     clickCount   = 0;   // số lần đã đóng QC
 
     private int screenW, screenH;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
-    // Panel auto-dismiss
+    // Auto-dismiss panel sau 4s
     private final Runnable dismissPanelRunnable = this::hidePanel;
 
-    // Bubble drag state
+    // Drag state
     private int   initX, initY;
     private float initTouchX, initTouchY;
     private boolean isDragging = false;
-    private long   touchDownTime;
+    private long    touchDownTime;
+
+    // Cache params để không gọi wm.updateViewLayout khi không cần
+    private WindowManager.LayoutParams bubbleParams;
 
     public FloatingBubbleManager(Context context) {
-        this.context = context;
-        this.wm      = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        this.context = context.getApplicationContext();
+        this.wm      = (WindowManager) this.context.getSystemService(Context.WINDOW_SERVICE);
+        refreshScreenSize();
+    }
 
+    private void refreshScreenSize() {
         DisplayMetrics dm = context.getResources().getDisplayMetrics();
         screenW = dm.widthPixels;
         screenH = dm.heightPixels;
     }
 
-    // ── Public API ────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────
+    // PUBLIC API
+    // ─────────────────────────────────────────────────────────────────
 
+    /** Hiển thị bubble (gọi sau khi đã có SYSTEM_ALERT_WINDOW permission) */
     public void show() {
         if (attached) return;
+        refreshScreenSize();
         createBubble();
         attached = true;
+        Log.d(TAG, "Bubble shown");
     }
 
+    /** Ẩn và xóa bubble + panel khỏi WindowManager */
     public void hide() {
         if (!attached) return;
-        handler.removeCallbacks(dismissPanelRunnable);
+        handler.removeCallbacksAndMessages(null);
         hidePanelImmediate();
         if (bubbleView != null) {
-            animateOut(bubbleView, () -> {
-                try { wm.removeView(bubbleView); } catch (Exception ignored) {}
-                bubbleView = null;
-            });
+            animateOut(bubbleView, () -> safeRemoveView(bubbleView));
+            bubbleView = null;
         }
         attached = false;
+        Log.d(TAG, "Bubble hidden");
     }
 
-    /** Gọi khi vừa phát hiện quảng cáo — hiện badge ⚡ */
-    public void showDetectedBadge() {
-        if (bubbleView == null) return;
+    /**
+     * Gọi khi phát hiện + click QC thành công.
+     * Tăng counter, hiện badge "!" trên bubble, cập nhật panel nếu đang mở.
+     */
+    public void onAdClicked() {
+        clickCount++;
         handler.post(() -> {
-            View badge = bubbleView.findViewById(R.id.bubbleBadge);
-            if (badge != null) {
-                badge.setVisibility(View.VISIBLE);
-                handler.postDelayed(() -> {
-                    if (badge != null) badge.setVisibility(View.GONE);
-                }, 2000);
-            }
+            showBadge();
+            updateClickCount(clickCount);
         });
     }
 
-    /** Cập nhật số lần đã click quảng cáo trên panel */
-    public void updateClickCount(int count) {
-        if (panelView == null) return;
-        handler.post(() -> {
-            TextView tv = panelView.findViewById(R.id.panelClickCount);
-            if (tv != null) tv.setText("Đã đóng: " + count + " quảng cáo");
-        });
-    }
-
-    /** Cập nhật trạng thái đang quét */
+    /** Cập nhật text trạng thái trên panel (ví dụ: "Đang quét 1Hz...") */
     public void updateStatus(String status) {
         if (panelView == null) return;
         handler.post(() -> {
@@ -120,72 +131,94 @@ public class FloatingBubbleManager {
         });
     }
 
-    public boolean isPaused() { return isPaused; }
+    public boolean isPaused()   { return isPaused; }
+    public boolean isAttached() { return attached; }
+    public int getClickCount()  { return clickCount; }
 
-    // ── Bubble creation ───────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────
+    // BUBBLE CREATION
+    // ─────────────────────────────────────────────────────────────────
 
     private void createBubble() {
         bubbleView = LayoutInflater.from(context).inflate(R.layout.layout_bubble, null);
 
-        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+        bubbleParams = buildOverlayParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                : WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.WRAP_CONTENT
+        );
+        bubbleParams.gravity = Gravity.TOP | Gravity.START;
+        // Bắt đầu ở cạnh phải, 1/3 màn hình từ trên
+        bubbleParams.x = screenW - dpToPx(70);
+        bubbleParams.y = screenH / 3;
+
+        wm.addView(bubbleView, bubbleParams);
+
+        // Bắt đầu pulse animation
+        startPulseAnimation(bubbleView.findViewById(R.id.bubbleRing));
+        // Hiệu ứng xuất hiện
+        animateIn(bubbleView);
+        // Gắn touch listener
+        setupBubbleTouchListener();
+    }
+
+    /**
+     * Xây dựng LayoutParams phù hợp cho overlay window.
+     * FLAG_NOT_FOCUSABLE: không lấy focus → không block keyboard/back của app khác
+     * FLAG_WATCH_OUTSIDE_TOUCH: nhận touch ngoài bounds → để dismiss panel khi tap ra ngoài
+     * FLAG_LAYOUT_IN_SCREEN: vẽ trong toàn màn hình kể cả status bar
+     */
+    private WindowManager.LayoutParams buildOverlayParams(int w, int h) {
+        int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            : WindowManager.LayoutParams.TYPE_PHONE;
+
+        return new WindowManager.LayoutParams(
+            w, h, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         );
-        params.gravity = Gravity.TOP | Gravity.START;
-        params.x = screenW - dpToPx(72);  // Bắt đầu ở cạnh phải
-        params.y = screenH / 3;
-
-        wm.addView(bubbleView, params);
-        startPulseAnimation(bubbleView.findViewById(R.id.bubbleRing));
-        animateIn(bubbleView);
-        setupBubbleTouchListener(params);
     }
 
-    private void setupBubbleTouchListener(WindowManager.LayoutParams params) {
+    // ─────────────────────────────────────────────────────────────────
+    // TOUCH / DRAG / SNAP
+    // ─────────────────────────────────────────────────────────────────
+
+    private void setupBubbleTouchListener() {
         bubbleView.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
                     isDragging    = false;
                     touchDownTime = System.currentTimeMillis();
-                    initX         = params.x;
-                    initY         = params.y;
+                    initX         = bubbleParams.x;
+                    initY         = bubbleParams.y;
                     initTouchX    = event.getRawX();
                     initTouchY    = event.getRawY();
                     return true;
 
-                case MotionEvent.ACTION_MOVE:
+                case MotionEvent.ACTION_MOVE: {
                     float dx = event.getRawX() - initTouchX;
                     float dy = event.getRawY() - initTouchY;
-                    if (!isDragging && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+                    if (!isDragging && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
                         isDragging = true;
                         if (panelVisible) hidePanelImmediate();
                     }
                     if (isDragging) {
-                        params.x = (int) (initX + dx);
-                        params.y = (int) (initY + dy);
-                        // Clamp trong màn hình
-                        int bubbleSize = dpToPx(56);
-                        params.x = Math.max(0, Math.min(screenW - bubbleSize, params.x));
-                        params.y = Math.max(0, Math.min(screenH - bubbleSize * 2, params.y));
-                        try { wm.updateViewLayout(bubbleView, params); } catch (Exception ignored) {}
+                        int bSize = dpToPx(64);
+                        bubbleParams.x = clampInt((int)(initX + dx), 0, screenW - bSize);
+                        bubbleParams.y = clampInt((int)(initY + dy), 0, screenH - bSize * 2);
+                        safeUpdateLayout(bubbleView, bubbleParams);
                     }
                     return true;
+                }
 
                 case MotionEvent.ACTION_UP:
                     if (isDragging) {
-                        // Snap vào cạnh gần nhất
-                        snapToEdge(params);
+                        snapToEdge();
                     } else {
-                        // Tap ngắn → toggle panel
-                        long duration = System.currentTimeMillis() - touchDownTime;
-                        if (duration < 300) togglePanel(params);
+                        long dur = System.currentTimeMillis() - touchDownTime;
+                        if (dur < 350) togglePanel();
                     }
                     isDragging = false;
                     return true;
@@ -194,83 +227,97 @@ public class FloatingBubbleManager {
         });
     }
 
-    // ── Snap to edge ──────────────────────────────────────────────────
-
-    private void snapToEdge(WindowManager.LayoutParams params) {
-        int bubbleSize = dpToPx(56);
-        int targetX = (params.x + bubbleSize / 2 < screenW / 2) ? 0 : screenW - bubbleSize;
-        ValueAnimator anim = ValueAnimator.ofInt(params.x, targetX);
-        anim.setDuration(250);
+    private void snapToEdge() {
+        if (bubbleView == null) return;
+        int bSize = dpToPx(64);
+        int targetX = (bubbleParams.x + bSize / 2 < screenW / 2) ? 0 : screenW - bSize;
+        ValueAnimator anim = ValueAnimator.ofInt(bubbleParams.x, targetX);
+        anim.setDuration(280);
         anim.setInterpolator(new DecelerateInterpolator());
         anim.addUpdateListener(a -> {
-            params.x = (int) a.getAnimatedValue();
-            try { wm.updateViewLayout(bubbleView, params); } catch (Exception ignored) {}
+            bubbleParams.x = (int) a.getAnimatedValue();
+            safeUpdateLayout(bubbleView, bubbleParams);
         });
         anim.start();
     }
 
-    // ── Panel ─────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────
+    // PANEL
+    // ─────────────────────────────────────────────────────────────────
 
-    private void togglePanel(WindowManager.LayoutParams bubbleParams) {
+    private void togglePanel() {
         if (panelVisible) { hidePanel(); return; }
+        showPanel();
+    }
 
+    private void showPanel() {
         handler.removeCallbacks(dismissPanelRunnable);
         panelView = LayoutInflater.from(context).inflate(R.layout.layout_bubble_panel, null);
 
-        // Posisi panel di sebelah bubble
-        int bubbleSize = dpToPx(56);
-        int panelW     = dpToPx(200);
-        int panelH     = dpToPx(140);
+        int bSize  = dpToPx(64);
+        int panelW = dpToPx(210);
+        int panelH = dpToPx(200); // estimate
 
+        // Vị trí panel: bên cạnh bubble, không vượt ra ngoài màn hình
         int panelX = (bubbleParams.x < screenW / 2)
-            ? bubbleParams.x + bubbleSize + dpToPx(8)
+            ? bubbleParams.x + bSize + dpToPx(8)
             : bubbleParams.x - panelW - dpToPx(8);
-        int panelY = Math.min(bubbleParams.y, screenH - panelH - dpToPx(16));
+        int panelY = clampInt(bubbleParams.y, 0, screenH - panelH - dpToPx(20));
+        panelX = clampInt(panelX, 0, screenW - panelW);
 
-        WindowManager.LayoutParams panelParams = new WindowManager.LayoutParams(
-            dpToPx(200),
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                : WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        );
-        panelParams.gravity = Gravity.TOP | Gravity.START;
-        panelParams.x = panelX;
-        panelParams.y = panelY;
+        WindowManager.LayoutParams pp = buildOverlayParams(dpToPx(210),
+            WindowManager.LayoutParams.WRAP_CONTENT);
+        pp.gravity = Gravity.TOP | Gravity.START;
+        pp.x = panelX;
+        pp.y = panelY;
 
-        wm.addView(panelView, panelParams);
+        wm.addView(panelView, pp);
         panelVisible = true;
-        setupPanelButtons();
+
+        // Khởi tạo nội dung panel
+        setupPanelContent();
         animateIn(panelView);
 
-        // Tự đóng sau 4s
+        // Auto-dismiss sau 4s
         handler.postDelayed(dismissPanelRunnable, 4000);
+
+        // Reset dismiss timer khi touch panel
+        panelView.setOnTouchListener((v, e) -> {
+            handler.removeCallbacks(dismissPanelRunnable);
+            handler.postDelayed(dismissPanelRunnable, 4000);
+            return false;
+        });
     }
 
-    private void setupPanelButtons() {
+    private void setupPanelContent() {
         if (panelView == null) return;
 
-        // Nút Pause / Resume
-        View btnPauseResume = panelView.findViewById(R.id.btnPauseResume);
-        TextView btnText    = panelView.findViewById(R.id.btnPauseResumeText);
-        ImageView btnIcon   = panelView.findViewById(R.id.btnPauseResumeIcon);
+        // Cập nhật click count ngay lập tức
+        TextView tvCount = panelView.findViewById(R.id.panelClickCount);
+        if (tvCount != null) tvCount.setText("Đã đóng: " + clickCount + " quảng cáo");
 
-        updatePauseResumeButton(btnText, btnIcon);
+        TextView tvStatus = panelView.findViewById(R.id.panelStatus);
+        if (tvStatus != null)
+            tvStatus.setText(isPaused ? "⏸ Đang tạm dừng" : "🟢 Đang quét 1Hz...");
 
-        btnPauseResume.setOnClickListener(v -> {
+        // Nút Pause/Resume
+        View btnPR     = panelView.findViewById(R.id.btnPauseResume);
+        TextView btnTxt = panelView.findViewById(R.id.btnPauseResumeText);
+        ImageView btnIco = panelView.findViewById(R.id.btnPauseResumeIcon);
+        updatePauseResumeUI(btnTxt, btnIco);
+
+        btnPR.setOnClickListener(v -> {
             handler.removeCallbacks(dismissPanelRunnable);
             isPaused = !isPaused;
-            updatePauseResumeButton(btnText, btnIcon);
-
-            // Gửi intent tới service
-            Intent intent = new Intent(context, ScreenCaptureService.class);
-            intent.setAction(isPaused ? ACTION_PAUSE : ACTION_RESUME);
-            context.startService(intent);
-
-            // Cập nhật bubble icon
+            updatePauseResumeUI(btnTxt, btnIco);
             updateBubbleState();
+
+            // Gửi intent đến ScreenCaptureService
+            sendServiceAction(isPaused ? ACTION_PAUSE : ACTION_RESUME);
+
+            // Cập nhật status text
+            if (tvStatus != null)
+                tvStatus.setText(isPaused ? "⏸ Đang tạm dừng" : "🟢 Đang quét 1Hz...");
 
             // Đóng panel sau 1.5s
             handler.postDelayed(dismissPanelRunnable, 1500);
@@ -280,26 +327,15 @@ public class FloatingBubbleManager {
         View btnStop = panelView.findViewById(R.id.btnStop);
         btnStop.setOnClickListener(v -> {
             hidePanelImmediate();
-            Intent intent = new Intent(context, ScreenCaptureService.class);
-            intent.setAction(ACTION_STOP);
-            context.startService(intent);
+            sendServiceAction(ACTION_STOP);
         });
 
-        // Nút đóng panel (X nhỏ)
+        // Nút đóng (X nhỏ)
         View btnClose = panelView.findViewById(R.id.btnClosePanel);
-        if (btnClose != null) {
-            btnClose.setOnClickListener(v -> hidePanel());
-        }
-
-        // Reset auto-dismiss mỗi khi touch panel
-        panelView.setOnTouchListener((v, e) -> {
-            handler.removeCallbacks(dismissPanelRunnable);
-            handler.postDelayed(dismissPanelRunnable, 4000);
-            return false;
-        });
+        if (btnClose != null) btnClose.setOnClickListener(v -> hidePanel());
     }
 
-    private void updatePauseResumeButton(TextView text, ImageView icon) {
+    private void updatePauseResumeUI(TextView text, ImageView icon) {
         if (text == null || icon == null) return;
         if (isPaused) {
             text.setText("Tiếp tục");
@@ -312,48 +348,81 @@ public class FloatingBubbleManager {
         }
     }
 
-    private void updateBubbleState() {
-        if (bubbleView == null) return;
-        View ring = bubbleView.findViewById(R.id.bubbleRing);
-        ImageView icon = bubbleView.findViewById(R.id.bubbleIcon);
-        if (isPaused) {
-            ring.clearAnimation();
-            ring.setAlpha(0.3f);
-            if (icon != null) icon.setColorFilter(0xFF888899);
-        } else {
-            ring.setAlpha(1f);
-            if (icon != null) icon.setColorFilter(0xFF00E5FF);
-            startPulseAnimation(ring);
-        }
-    }
-
     private void hidePanel() {
         if (!panelVisible || panelView == null) return;
-        animateOut(panelView, () -> {
-            try { wm.removeView(panelView); } catch (Exception ignored) {}
-            panelView    = null;
-            panelVisible = false;
-        });
+        handler.removeCallbacks(dismissPanelRunnable);
+        View v = panelView;
+        panelView    = null;
+        panelVisible = false;
+        animateOut(v, () -> safeRemoveView(v));
     }
 
     private void hidePanelImmediate() {
+        handler.removeCallbacks(dismissPanelRunnable);
         if (panelView != null) {
-            try { wm.removeView(panelView); } catch (Exception ignored) {}
+            safeRemoveView(panelView);
             panelView    = null;
             panelVisible = false;
         }
     }
 
-    // ── Animations ────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────
+    // BUBBLE STATE
+    // ─────────────────────────────────────────────────────────────────
+
+    private void updateBubbleState() {
+        if (bubbleView == null) return;
+        View ring         = bubbleView.findViewById(R.id.bubbleRing);
+        ImageView icon    = bubbleView.findViewById(R.id.bubbleIcon);
+        if (isPaused) {
+            if (ring != null) {
+                ring.animate().cancel();
+                ring.setScaleX(1f); ring.setScaleY(1f);
+                ring.setAlpha(0.25f);
+            }
+            if (icon != null) icon.setColorFilter(0xFF667788);
+        } else {
+            if (ring != null) {
+                ring.setAlpha(1f);
+                startPulseAnimation(ring);
+            }
+            if (icon != null) icon.setColorFilter(0xFF00E5FF);
+        }
+    }
+
+    /** Hiện badge "!" trong 2 giây */
+    private void showBadge() {
+        if (bubbleView == null) return;
+        View badge = bubbleView.findViewById(R.id.bubbleBadge);
+        if (badge == null) return;
+        badge.setVisibility(View.VISIBLE);
+        handler.removeCallbacksAndMessages(badge); // xóa delay cũ nếu có
+        handler.postDelayed(() -> {
+            if (badge != null) badge.setVisibility(View.GONE);
+        }, 2000);
+    }
+
+    /** Chỉ cập nhật click count trên panel (không hiện badge) */
+    private void updateClickCount(int count) {
+        if (panelView == null) return;
+        TextView tv = panelView.findViewById(R.id.panelClickCount);
+        if (tv != null) tv.setText("Đã đóng: " + count + " quảng cáo");
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // ANIMATIONS
+    // ─────────────────────────────────────────────────────────────────
 
     private void startPulseAnimation(View ring) {
         if (ring == null) return;
-        ObjectAnimator scaleX = ObjectAnimator.ofFloat(ring, "scaleX", 1f, 1.25f, 1f);
-        ObjectAnimator scaleY = ObjectAnimator.ofFloat(ring, "scaleY", 1f, 1.25f, 1f);
-        ObjectAnimator alpha  = ObjectAnimator.ofFloat(ring, "alpha", 0.8f, 0.2f, 0.8f);
+        ring.animate().cancel();
 
-        for (ObjectAnimator a : new ObjectAnimator[]{scaleX, scaleY, alpha}) {
-            a.setDuration(1800);
+        // Scale pulse
+        ObjectAnimator sx    = ObjectAnimator.ofFloat(ring, "scaleX", 1f, 1.30f, 1f);
+        ObjectAnimator sy    = ObjectAnimator.ofFloat(ring, "scaleY", 1f, 1.30f, 1f);
+        ObjectAnimator alpha = ObjectAnimator.ofFloat(ring, "alpha",  0.9f, 0.15f, 0.9f);
+        for (ObjectAnimator a : new ObjectAnimator[]{sx, sy, alpha}) {
+            a.setDuration(2000);
             a.setRepeatCount(ValueAnimator.INFINITE);
             a.setInterpolator(new DecelerateInterpolator());
             a.start();
@@ -361,25 +430,55 @@ public class FloatingBubbleManager {
     }
 
     private void animateIn(View v) {
-        v.setScaleX(0.3f); v.setScaleY(0.3f); v.setAlpha(0f);
-        v.animate().scaleX(1f).scaleY(1f).alpha(1f)
-            .setDuration(280)
-            .setInterpolator(new OvershootInterpolator(1.8f))
+        v.setScaleX(0.2f); v.setScaleY(0.2f); v.setAlpha(0f);
+        v.animate()
+            .scaleX(1f).scaleY(1f).alpha(1f)
+            .setDuration(300)
+            .setInterpolator(new OvershootInterpolator(2f))
             .start();
     }
 
     private void animateOut(View v, Runnable onEnd) {
-        v.animate().scaleX(0.2f).scaleY(0.2f).alpha(0f)
+        v.animate()
+            .scaleX(0.1f).scaleY(0.1f).alpha(0f)
             .setDuration(200)
             .setInterpolator(new DecelerateInterpolator())
             .setListener(new AnimatorListenerAdapter() {
-                @Override public void onAnimationEnd(Animator a) { if (onEnd != null) onEnd.run(); }
+                @Override public void onAnimationEnd(Animator a) {
+                    v.animate().setListener(null); // clean up
+                    if (onEnd != null) onEnd.run();
+                }
             }).start();
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────
+    // HELPERS
+    // ─────────────────────────────────────────────────────────────────
+
+    private void sendServiceAction(String action) {
+        try {
+            Intent intent = new Intent(context, ScreenCaptureService.class);
+            intent.setAction(action);
+            context.startService(intent);
+        } catch (Exception e) {
+            Log.e(TAG, "sendServiceAction failed: " + e.getMessage());
+        }
+    }
+
+    private void safeRemoveView(View v) {
+        try { if (v != null) wm.removeView(v); } catch (Exception ignored) {}
+    }
+
+    private void safeUpdateLayout(View v, WindowManager.LayoutParams p) {
+        try { if (v != null && v.isAttachedToWindow()) wm.updateViewLayout(v, p); }
+        catch (Exception ignored) {}
+    }
 
     private int dpToPx(int dp) {
         return Math.round(dp * context.getResources().getDisplayMetrics().density);
+    }
+
+    private static int clampInt(int val, int min, int max) {
+        return Math.max(min, Math.min(max, val));
     }
 }
