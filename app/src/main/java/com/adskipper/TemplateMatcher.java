@@ -8,249 +8,287 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Template Matching engine - so khớp hình ảnh tham chiếu với màn hình.
+ * TemplateMatcher — so khớp ảnh tham chiếu với màn hình.
  *
- * Thuật toán: Normalized Cross-Correlation (NCC) trên ảnh thu nhỏ 1/4.
- * - Scale cả template và screen về 1/4 để tăng tốc độ
- * - Match result được scale lại về tọa độ đầy đủ
- * - Hỗ trợ multi-template (nhiều ảnh tham chiếu)
+ * Độ chính xác 1:1 (full resolution):
+ *   - Không scale xuống để giữ chính xác tọa độ click
+ *   - Thuật toán NCC (Normalized Cross-Correlation) trên ảnh gốc
+ *   - Tọa độ tâm (centerXRatio / centerYRatio) là trung tâm chính xác
+ *     của vùng khớp, map thẳng về pixel màn hình thật
+ *
+ * Strategy tìm kiếm:
+ *   1. Coarse scan: bước = max(1, min(tw,th)/4) — quét nhanh toàn màn hình
+ *   2. Fine scan:   vùng ±step xung quanh điểm tốt nhất — tinh chỉnh pixel
+ *
+ * Interval: 2s/lần (thay vì 1s để giảm tải CPU)
  */
 public class TemplateMatcher {
 
     private static final String TAG = "TemplateMatcher";
-    public static final float SCALE_FACTOR = 0.25f;   // 1/4 như yêu cầu
-    private static final float MATCH_THRESHOLD = 0.75f;
+
+    /** Ngưỡng NCC để coi là khớp — 0.85 = 85% tương đồng */
+    private static final float MATCH_THRESHOLD = 0.85f;
+
+    // ─────────────────────────────────────────────────────────────
+    // DATA CLASSES
+    // ─────────────────────────────────────────────────────────────
 
     public static class TemplateEntry {
-        public String name;
-        public Bitmap fullBitmap;
-        public Bitmap scaledBitmap;
-        public int[] scaledPixels;
-        public float meanR, meanG, meanB;
+        public final String name;
+        public final Bitmap bitmap;
+        public final int    width;
+        public final int    height;
+        public final int[]  pixels;       // pixel array full-res
+        public final float  meanR, meanG, meanB;
+        public final double norm;         // pre-computed template norm cho NCC
 
         public TemplateEntry(String name, Bitmap original) {
-            this.name = name;
-            this.fullBitmap = original;
-            int sw = Math.max(1, (int)(original.getWidth()  * SCALE_FACTOR));
-            int sh = Math.max(1, (int)(original.getHeight() * SCALE_FACTOR));
-            this.scaledBitmap = Bitmap.createScaledBitmap(original, sw, sh, true);
-            this.scaledPixels = new int[sw * sh];
-            this.scaledBitmap.getPixels(scaledPixels, 0, sw, 0, 0, sw, sh);
-            // Precompute mean
+            this.name   = name;
+            this.bitmap = original;
+            this.width  = original.getWidth();
+            this.height = original.getHeight();
+            this.pixels = new int[width * height];
+            original.getPixels(pixels, 0, width, 0, 0, width, height);
+
+            // Pre-compute mean
             double sr = 0, sg = 0, sb = 0;
-            for (int px : scaledPixels) {
+            for (int px : pixels) {
                 sr += Color.red(px);
                 sg += Color.green(px);
                 sb += Color.blue(px);
             }
-            int n = scaledPixels.length;
+            int n = pixels.length;
             this.meanR = (float)(sr / n);
             this.meanG = (float)(sg / n);
             this.meanB = (float)(sb / n);
+
+            // Pre-compute template norm (denominator của NCC)
+            double normSum = 0;
+            for (int px : pixels) {
+                double dr = Color.red(px)   - meanR;
+                double dg = Color.green(px) - meanG;
+                double db = Color.blue(px)  - meanB;
+                normSum += dr*dr + dg*dg + db*db;
+            }
+            this.norm = Math.sqrt(normSum);
         }
     }
 
     public static class MatchResult {
         public boolean matched;
-        public float score;           // 0..1
-        public float centerXRatio;    // tọa độ tâm so với ảnh gốc (0..1)
-        public float centerYRatio;
-        public String templateName;
+        public float   score;           // NCC score 0..1
+        public float   centerXRatio;   // tâm X / screenW (0..1)
+        public float   centerYRatio;   // tâm Y / screenH (0..1)
+        public int     pixelX;         // tâm X tuyệt đối (pixel)
+        public int     pixelY;         // tâm Y tuyệt đối (pixel)
+        public String  templateName;
 
         @Override
         public String toString() {
-            return String.format("[%s] score=%.2f @ (%.3f, %.3f)",
-                templateName, score, centerXRatio, centerYRatio);
+            return String.format("[%s] score=%.1f%% @ pixel(%d,%d) ratio(%.3f,%.3f)",
+                templateName, score * 100, pixelX, pixelY, centerXRatio, centerYRatio);
         }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // STATE
+    // ─────────────────────────────────────────────────────────────
+
     private final List<TemplateEntry> templates = new ArrayList<>();
-    private int[] screenPixelsScaled;
-    private int scaledScreenW, scaledScreenH;
+
+    // Cache screen pixels để tái sử dụng giữa nhiều template trong cùng 1 frame
+    private int[]  cachedScreenPixels;
+    private int    cachedScreenW, cachedScreenH;
+    private Bitmap cachedScreenBitmap; // reference để detect thay đổi
+
+    // ─────────────────────────────────────────────────────────────
+    // PUBLIC API
+    // ─────────────────────────────────────────────────────────────
 
     public void addTemplate(String name, Bitmap bitmap) {
+        if (bitmap == null || bitmap.isRecycled()) {
+            Log.e(TAG, "addTemplate: bitmap null hoặc đã recycle — bỏ qua");
+            return;
+        }
         templates.add(new TemplateEntry(name, bitmap));
-        Log.d(TAG, "Added template: " + name + " (" + bitmap.getWidth() + "x" + bitmap.getHeight() + ")");
+        Log.d(TAG, "Template added: [" + name + "] " + bitmap.getWidth() + "x" + bitmap.getHeight());
     }
 
     public void clearTemplates() {
-        for (TemplateEntry t : templates) {
-            if (t.scaledBitmap != null && !t.scaledBitmap.isRecycled())
-                t.scaledBitmap.recycle();
-        }
         templates.clear();
+        cachedScreenPixels  = null;
+        cachedScreenBitmap  = null;
     }
 
     public int getTemplateCount() { return templates.size(); }
 
     /**
-     * So khớp tất cả template với màn hình.
-     * @param screen Ảnh màn hình đầy đủ (gốc, không resize)
-     * @return Kết quả khớp tốt nhất, hoặc matched=false
+     * So khớp tất cả template với frame màn hình (full resolution 1:1).
+     *
+     * @param screen  Bitmap màn hình gốc (không resize)
+     * @return        Kết quả khớp tốt nhất; matched=false nếu không đạt ngưỡng
      */
     public MatchResult match(Bitmap screen) {
-        if (templates.isEmpty()) {
-            MatchResult r = new MatchResult();
-            r.matched = false;
-            return r;
+        MatchResult noMatch = new MatchResult();
+        noMatch.matched = false;
+
+        if (templates.isEmpty() || screen == null || screen.isRecycled()) return noMatch;
+
+        int sw = screen.getWidth();
+        int sh = screen.getHeight();
+
+        // Load screen pixels (cache theo frame)
+        int[] screenPx;
+        if (screen != cachedScreenBitmap
+                || cachedScreenPixels == null
+                || cachedScreenW != sw
+                || cachedScreenH != sh) {
+            screenPx = new int[sw * sh];
+            screen.getPixels(screenPx, 0, sw, 0, 0, sw, sh);
+            cachedScreenPixels = screenPx;
+            cachedScreenW      = sw;
+            cachedScreenH      = sh;
+            cachedScreenBitmap = screen;
+        } else {
+            screenPx = cachedScreenPixels;
         }
 
-        // Scale màn hình về 1/4
-        int sw = Math.max(1, (int)(screen.getWidth()  * SCALE_FACTOR));
-        int sh = Math.max(1, (int)(screen.getHeight() * SCALE_FACTOR));
-        Bitmap scaledScreen = Bitmap.createScaledBitmap(screen, sw, sh, true);
-        scaledScreenW = sw;
-        scaledScreenH = sh;
-        screenPixelsScaled = new int[sw * sh];
-        scaledScreen.getPixels(screenPixelsScaled, 0, sw, 0, 0, sw, sh);
-        scaledScreen.recycle();
-
-        MatchResult best = new MatchResult();
-        best.matched = false;
-        best.score = 0;
+        MatchResult best = noMatch;
 
         for (TemplateEntry tmpl : templates) {
-            MatchResult r = matchSingle(tmpl, screen.getWidth(), screen.getHeight());
-            if (r.score > best.score) {
-                best = r;
+            if (tmpl.width > sw || tmpl.height > sh) {
+                Log.w(TAG, "Template [" + tmpl.name + "] lớn hơn màn hình — bỏ qua");
+                continue;
             }
+            MatchResult r = matchOne(tmpl, screenPx, sw, sh);
+            if (r.score > best.score) best = r;
         }
 
         best.matched = (best.score >= MATCH_THRESHOLD);
         return best;
     }
 
-    private MatchResult matchSingle(TemplateEntry tmpl, int origW, int origH) {
-        int tw = tmpl.scaledBitmap.getWidth();
-        int th = tmpl.scaledBitmap.getHeight();
-        int sw = scaledScreenW;
-        int sh = scaledScreenH;
+    // ─────────────────────────────────────────────────────────────
+    // CORE MATCHING (full 1:1 resolution)
+    // ─────────────────────────────────────────────────────────────
 
-        if (tw > sw || th > sh) {
-            MatchResult r = new MatchResult();
-            r.score = 0;
-            r.matched = false;
-            return r;
-        }
+    /**
+     * NCC matching với 2 giai đoạn:
+     *   Phase 1 — Coarse: bước step lớn, quét toàn màn hình nhanh
+     *   Phase 2 — Fine:   bước 1px quanh vùng tốt nhất của Phase 1
+     *
+     * Trả về centerX/Y là trung tâm CHÍNH XÁC của vùng khớp (pixel).
+     */
+    private MatchResult matchOne(TemplateEntry tmpl,
+                                  int[] screenPx, int sw, int sh) {
+        int tw = tmpl.width;
+        int th = tmpl.height;
 
-        float bestScore = -1;
-        int bestX = 0, bestY = 0;
+        // Coarse step: khoảng 1/4 kích thước nhỏ nhất của template
+        // Tối thiểu 2 để không quá chậm, tối đa 16
+        int step = Math.max(2, Math.min(16, Math.min(tw, th) / 4));
 
-        // Precompute template std
-        double tNorm = computeNorm(tmpl.scaledPixels, tmpl.meanR, tmpl.meanG, tmpl.meanB);
-        if (tNorm == 0) {
-            MatchResult r = new MatchResult();
-            r.score = 0;
-            return r;
-        }
+        // Phase 1: Coarse scan
+        float bestScore = -2f;
+        int   bestX     = 0, bestY = 0;
 
-        // Slide template over screen at 1/4 scale
-        int stepX = Math.max(1, tw / 8);
-        int stepY = Math.max(1, th / 8);
-
-        for (int y = 0; y <= sh - th; y += stepY) {
-            for (int x = 0; x <= sw - tw; x += stepX) {
-                float score = computeNCC(
-                    screenPixelsScaled, sw,
-                    tmpl.scaledPixels, tw, th,
-                    x, y,
-                    tmpl.meanR, tmpl.meanG, tmpl.meanB,
-                    tNorm
-                );
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestX = x;
-                    bestY = y;
-                }
+        for (int y = 0; y <= sh - th; y += step) {
+            for (int x = 0; x <= sw - tw; x += step) {
+                float s = ncc(screenPx, sw, x, y, tmpl);
+                if (s > bestScore) { bestScore = s; bestX = x; bestY = y; }
             }
         }
 
-        // Refine: fine search around best position
-        for (int y = Math.max(0, bestY - stepY); y <= Math.min(sh - th, bestY + stepY); y++) {
-            for (int x = Math.max(0, bestX - stepX); x <= Math.min(sw - tw, bestX + stepX); x++) {
-                float score = computeNCC(
-                    screenPixelsScaled, sw,
-                    tmpl.scaledPixels, tw, th,
-                    x, y,
-                    tmpl.meanR, tmpl.meanG, tmpl.meanB,
-                    tNorm
-                );
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestX = x;
-                    bestY = y;
-                }
+        // Phase 2: Fine scan — 1px trong vùng ±step xung quanh coarse best
+        int x0 = Math.max(0,      bestX - step);
+        int x1 = Math.min(sw - tw, bestX + step);
+        int y0 = Math.max(0,      bestY - step);
+        int y1 = Math.min(sh - th, bestY + step);
+
+        for (int y = y0; y <= y1; y++) {
+            for (int x = x0; x <= x1; x++) {
+                float s = ncc(screenPx, sw, x, y, tmpl);
+                if (s > bestScore) { bestScore = s; bestX = x; bestY = y; }
             }
         }
 
-        // Convert scaled match coords → original image ratio
-        // Center of matched region in scaled coords
-        float scaledCx = bestX + tw / 2f;
-        float scaledCy = bestY + th / 2f;
+        // Tâm của vùng khớp (pixel chính xác)
+        int centerPxX = bestX + tw / 2;
+        int centerPxY = bestY + th / 2;
 
         MatchResult r = new MatchResult();
-        r.score = Math.max(0, Math.min(1, bestScore));
-        r.centerXRatio = scaledCx / sw;
-        r.centerYRatio = scaledCy / sh;
-        r.templateName = tmpl.name;
-        r.matched = (r.score >= MATCH_THRESHOLD);
+        r.score         = Math.max(0f, Math.min(1f, bestScore));
+        r.pixelX        = centerPxX;
+        r.pixelY        = centerPxY;
+        r.centerXRatio  = (float) centerPxX / sw;
+        r.centerYRatio  = (float) centerPxY / sh;
+        r.templateName  = tmpl.name;
+        r.matched       = (r.score >= MATCH_THRESHOLD);
         return r;
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // NCC COMPUTATION
+    // ─────────────────────────────────────────────────────────────
+
     /**
-     * Normalized Cross-Correlation for a patch in screenPixels vs template.
-     * Uses RGB channels.
+     * Normalized Cross-Correlation tại vị trí (ox, oy) trên màn hình.
+     *
+     *         Σ (patch_i − μ_patch)(tmpl_i − μ_tmpl)
+     * NCC = ─────────────────────────────────────────
+     *             σ_patch × σ_tmpl
+     *
+     * Tính trên cả 3 channel R, G, B đồng thời.
+     * Trả về giá trị trong [-1, 1]; 1 = khớp hoàn hảo.
      */
-    private float computeNCC(
-        int[] screen, int screenW,
-        int[] tmpl, int tw, int th,
-        int ox, int oy,
-        float tMeanR, float tMeanG, float tMeanB,
-        double tNorm
-    ) {
-        // Compute patch mean
-        double pMeanR = 0, pMeanG = 0, pMeanB = 0;
-        int n = tw * th;
+    private float ncc(int[] screen, int sw,
+                      int ox, int oy,
+                      TemplateEntry tmpl) {
+        int tw = tmpl.width;
+        int th = tmpl.height;
+        int n  = tw * th;
+
+        // ── Tính mean của patch (vùng màn hình tại ox,oy) ──
+        double pSumR = 0, pSumG = 0, pSumB = 0;
         for (int y = 0; y < th; y++) {
+            int rowBase = (oy + y) * sw + ox;
             for (int x = 0; x < tw; x++) {
-                int px = screen[(oy + y) * screenW + (ox + x)];
-                pMeanR += Color.red(px);
-                pMeanG += Color.green(px);
-                pMeanB += Color.blue(px);
+                int px = screen[rowBase + x];
+                pSumR += (px >> 16) & 0xFF;
+                pSumG += (px >>  8) & 0xFF;
+                pSumB +=  px        & 0xFF;
             }
         }
-        pMeanR /= n; pMeanG /= n; pMeanB /= n;
+        double pMeanR = pSumR / n;
+        double pMeanG = pSumG / n;
+        double pMeanB = pSumB / n;
 
-        // NCC
+        // ── NCC numerator + patch norm ──
         double num = 0, pNorm = 0;
+        int[] tPx  = tmpl.pixels;
+        float tMR  = tmpl.meanR, tMG = tmpl.meanG, tMB = tmpl.meanB;
+
         for (int y = 0; y < th; y++) {
+            int sRowBase = (oy + y) * sw + ox;
+            int tRowBase = y * tw;
             for (int x = 0; x < tw; x++) {
-                int sp = screen[(oy + y) * screenW + (ox + x)];
-                int tp = tmpl[y * tw + x];
-                double dr = Color.red(sp)   - pMeanR;
-                double dg = Color.green(sp) - pMeanG;
-                double db = Color.blue(sp)  - pMeanB;
-                double tr = Color.red(tp)   - tMeanR;
-                double tg = Color.green(tp) - tMeanG;
-                double tb = Color.blue(tp)  - tMeanB;
-                num += dr * tr + dg * tg + db * tb;
+                int sp = screen[sRowBase + x];
+                int tp = tPx[tRowBase + x];
+
+                double dr = ((sp >> 16) & 0xFF) - pMeanR;
+                double dg = ((sp >>  8) & 0xFF) - pMeanG;
+                double db = ( sp        & 0xFF) - pMeanB;
+                double tr = ((tp >> 16) & 0xFF) - tMR;
+                double tg = ((tp >>  8) & 0xFF) - tMG;
+                double tb = ( tp        & 0xFF) - tMB;
+
+                num   += dr*tr + dg*tg + db*tb;
                 pNorm += dr*dr + dg*dg + db*db;
             }
         }
-        pNorm = Math.sqrt(pNorm);
-        if (pNorm == 0) return 0;
-        double ncc = num / (tNorm * pNorm);
-        return (float) Math.max(-1, Math.min(1, ncc));
-    }
 
-    private double computeNorm(int[] pixels, float mR, float mG, float mB) {
-        double sum = 0;
-        for (int px : pixels) {
-            double dr = Color.red(px)   - mR;
-            double dg = Color.green(px) - mG;
-            double db = Color.blue(px)  - mB;
-            sum += dr*dr + dg*dg + db*db;
-        }
-        return Math.sqrt(sum);
+        if (pNorm <= 0 || tmpl.norm <= 0) return 0f;
+        double nccVal = num / (Math.sqrt(pNorm) * tmpl.norm);
+        return (float) Math.max(-1.0, Math.min(1.0, nccVal));
     }
 }

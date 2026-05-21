@@ -17,6 +17,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -37,8 +38,12 @@ import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
 
-    public static final String ACTION_LOG    = "com.adskipper.LOG";
-    public static final String EXTRA_LOG_MSG = "log_msg";
+    public static final String ACTION_LOG         = "com.adskipper.LOG";
+    public static final String EXTRA_LOG_MSG      = "log_msg";
+
+    // Action để service báo ngược lại trạng thái YOLO
+    public static final String ACTION_YOLO_STATUS = "com.adskipper.YOLO_STATUS";
+    public static final String EXTRA_YOLO_OK      = "yolo_ok";
 
     private static final String PREFS   = "AdSkipperPrefs";
     private static final String KEY_API = "api_key";
@@ -46,23 +51,23 @@ public class MainActivity extends AppCompatActivity {
     // Views
     private EditText      editApiKey;
     private Button        btnSaveKey, btnAccessibility, btnScreenCapture;
-    private Button        btnOverlay;   // NEW: nút xin quyền overlay
+    private Button        btnOverlay;
     private Button        btnToggle, btnClearLog, btnAddTemplate, btnClearTemplates;
     private SwitchCompat  switchOverlay, switchYolo;
     private TextView      txtLog, txtAStatus, txtCStatus, txtAIStatus, txtTemplateCount;
     private View          dotA, dotC, dotAI;
-    private View          dotOverlay;      // NEW: status dot cho overlay
-    private TextView      txtOverlayStatus; // NEW
+    private View          dotOverlay;
+    private TextView      txtOverlayStatus;
 
     private SharedPreferences prefs;
-    private boolean running = false;
-    private int     captureCode = 0;
-    private Intent  captureData = null;
+    private boolean running       = false;
+    private int     captureCode   = 0;
+    private Intent  captureData   = null;
     private int     templateCount = 0;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    // ── Launchers ─────────────────────────────────────────────────────
+    // ── Launchers ──────────────────────────────────────────────────
 
     private final ActivityResultLauncher<Intent> capturePermLauncher =
         registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), r -> {
@@ -72,6 +77,9 @@ public class MainActivity extends AppCompatActivity {
                 ScreenCaptureService.setProjectionData(captureCode, captureData);
                 setStatus(dotC, txtCStatus, true, "Đã cấp phép");
                 log("✅ Quyền chụp màn hình OK");
+            } else {
+                log("❌ Người dùng từ chối quyền chụp màn hình");
+                Toast.makeText(this, "Cần cấp quyền chụp màn hình để dùng app!", Toast.LENGTH_LONG).show();
             }
         });
 
@@ -83,7 +91,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-    // ── Log receiver ─────────────────────────────────────────────────
+    // ── Receivers ─────────────────────────────────────────────────
 
     private final BroadcastReceiver logReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ctx, Intent i) {
@@ -92,9 +100,30 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    // ─────────────────────────────────────────────────────────────────
+    /**
+     * Nhận broadcast từ ScreenCaptureService về trạng thái YOLO model.
+     * Cập nhật UI dot + text cho đúng.
+     */
+    private final BroadcastReceiver yoloStatusReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context ctx, Intent i) {
+            boolean ok = i.getBooleanExtra(EXTRA_YOLO_OK, false);
+            runOnUiThread(() -> {
+                if (ok) {
+                    setStatus(dotAI, txtAIStatus, true, "On-Device ✅ (3s/lần)");
+                } else {
+                    // YOLO fail → hiển thị trạng thái Claude nếu có key
+                    String key = prefs.getString(KEY_API, "");
+                    boolean hasKey = !TextUtils.isEmpty(key);
+                    setStatus(dotAI, txtAIStatus, hasKey,
+                        hasKey ? "Claude fallback (không có YOLO)" : "❌ Không có model");
+                }
+            });
+        }
+    };
+
+    // ─────────────────────────────────────────────────────────────
     // LIFECYCLE
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     @Override
@@ -108,14 +137,19 @@ public class MainActivity extends AppCompatActivity {
         setupListeners();
         updateStatuses();
 
+        // Đăng ký cả 2 receiver
+        IntentFilter logFilter  = new IntentFilter(ACTION_LOG);
+        IntentFilter yoloFilter = new IntentFilter(ACTION_YOLO_STATUS);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(logReceiver, new IntentFilter(ACTION_LOG),
-                Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(logReceiver,      logFilter,  Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(yoloStatusReceiver, yoloFilter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            registerReceiver(logReceiver, new IntentFilter(ACTION_LOG));
+            registerReceiver(logReceiver,      logFilter);
+            registerReceiver(yoloStatusReceiver, yoloFilter);
         }
 
-        log("🚀 AdSkipper AI v2 — YOLO + Template + Claude fallback");
+        log("🚀 AdSkipper AI v2 — YOLO(3s) + Template(1s) + Claude fallback");
     }
 
     @Override
@@ -127,40 +161,41 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        try { unregisterReceiver(logReceiver); } catch (Exception ignored) {}
+        try { unregisterReceiver(logReceiver); }       catch (Exception ignored) {}
+        try { unregisterReceiver(yoloStatusReceiver); } catch (Exception ignored) {}
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // BIND VIEWS
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     private void bindViews() {
-        editApiKey       = findViewById(R.id.editApiKey);
-        btnSaveKey       = findViewById(R.id.btnSaveKey);
-        btnAccessibility = findViewById(R.id.btnAccessibility);
-        btnScreenCapture = findViewById(R.id.btnScreenCapture);
-        btnOverlay       = findViewById(R.id.btnOverlayPermission);
-        btnToggle        = findViewById(R.id.btnToggleService);
-        btnClearLog      = findViewById(R.id.btnClearLog);
-        btnAddTemplate   = findViewById(R.id.btnAddTemplate);
+        editApiKey        = findViewById(R.id.editApiKey);
+        btnSaveKey        = findViewById(R.id.btnSaveKey);
+        btnAccessibility  = findViewById(R.id.btnAccessibility);
+        btnScreenCapture  = findViewById(R.id.btnScreenCapture);
+        btnOverlay        = findViewById(R.id.btnOverlayPermission);
+        btnToggle         = findViewById(R.id.btnToggleService);
+        btnClearLog       = findViewById(R.id.btnClearLog);
+        btnAddTemplate    = findViewById(R.id.btnAddTemplate);
         btnClearTemplates = findViewById(R.id.btnClearTemplates);
-        switchOverlay    = findViewById(R.id.switchOverlay);
-        switchYolo       = findViewById(R.id.switchYolo);
-        txtLog           = findViewById(R.id.txtLog);
-        txtAStatus       = findViewById(R.id.txtAccessibilityStatus);
-        txtCStatus       = findViewById(R.id.txtCaptureStatus);
-        txtAIStatus      = findViewById(R.id.txtAIStatus);
-        txtTemplateCount = findViewById(R.id.txtTemplateCount);
-        dotA             = findViewById(R.id.dotAccessibility);
-        dotC             = findViewById(R.id.dotCapture);
-        dotAI            = findViewById(R.id.dotAI);
-        dotOverlay       = findViewById(R.id.dotOverlay);
-        txtOverlayStatus = findViewById(R.id.txtOverlayStatus);
+        switchOverlay     = findViewById(R.id.switchOverlay);
+        switchYolo        = findViewById(R.id.switchYolo);
+        txtLog            = findViewById(R.id.txtLog);
+        txtAStatus        = findViewById(R.id.txtAccessibilityStatus);
+        txtCStatus        = findViewById(R.id.txtCaptureStatus);
+        txtAIStatus       = findViewById(R.id.txtAIStatus);
+        txtTemplateCount  = findViewById(R.id.txtTemplateCount);
+        dotA              = findViewById(R.id.dotAccessibility);
+        dotC              = findViewById(R.id.dotCapture);
+        dotAI             = findViewById(R.id.dotAI);
+        dotOverlay        = findViewById(R.id.dotOverlay);
+        txtOverlayStatus  = findViewById(R.id.txtOverlayStatus);
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // PREFS
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     private void loadPrefs() {
         String key = prefs.getString(KEY_API, "");
@@ -172,18 +207,20 @@ public class MainActivity extends AppCompatActivity {
         updateTemplateCount();
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // LISTENERS
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     private void setupListeners() {
         btnSaveKey.setOnClickListener(v -> {
             String key = editApiKey.getText().toString().trim();
             prefs.edit().putString(KEY_API, key).apply();
             ClaudeVisionClient.setApiKey(key);
-            setStatus(dotAI, txtAIStatus, !key.isEmpty(),
-                key.isEmpty() ? "Không dùng" : "Sẵn sàng (fallback)");
-            log("🔑 Claude API Key " + (key.isEmpty() ? "đã xóa" : "đã lưu"));
+            // Không ghi đè dotAI — chỉ update Claude status riêng
+            log("🔑 Claude API Key " + (key.isEmpty() ? "đã xóa" : "đã lưu (dùng làm fallback)"));
+            Toast.makeText(this,
+                key.isEmpty() ? "API key đã xóa" : "✅ API key đã lưu",
+                Toast.LENGTH_SHORT).show();
         });
 
         btnAccessibility.setOnClickListener(v ->
@@ -195,7 +232,6 @@ public class MainActivity extends AppCompatActivity {
             capturePermLauncher.launch(mpm.createScreenCaptureIntent());
         });
 
-        // Xin quyền vẽ overlay (SYSTEM_ALERT_WINDOW)
         if (btnOverlay != null) {
             btnOverlay.setOnClickListener(v -> requestOverlayPermission());
         }
@@ -221,9 +257,9 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // OVERLAY PERMISSION
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     private void requestOverlayPermission() {
         if (Settings.canDrawOverlays(this)) {
@@ -241,52 +277,69 @@ public class MainActivity extends AppCompatActivity {
             Toast.LENGTH_LONG).show();
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // START / STOP
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     private void startAdSkipper() {
+        // Kiểm tra từng điều kiện, hiển thị lỗi cụ thể
         if (!isAccessibilityOn()) {
-            Toast.makeText(this, "⚠️ Bật Accessibility Service trước!", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "⚠️ Bật Accessibility Service trước! (Bước 1)", Toast.LENGTH_LONG).show();
             return;
         }
-        if (captureCode == 0) {
-            Toast.makeText(this, "⚠️ Cấp quyền chụp màn hình trước!", Toast.LENGTH_LONG).show();
+        if (captureCode == 0 || captureData == null) {
+            Toast.makeText(this, "⚠️ Cấp quyền chụp màn hình trước! (Bước 2)", Toast.LENGTH_LONG).show();
             return;
         }
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this,
-                "⚠️ Cần quyền 'Hiển thị trên ứng dụng khác' để dùng floating bubble!",
+                "⚠️ Cần quyền 'Hiển thị trên ứng dụng khác' để dùng floating bubble! (Bước 3)",
                 Toast.LENGTH_LONG).show();
             requestOverlayPermission();
             return;
         }
 
-        Intent svc = new Intent(this, ScreenCaptureService.class);
-        svc.putExtra("showOverlay", switchOverlay.isChecked());
-        startForegroundService(svc);
+        try {
+            // Truyền lại projection data trước khi start service
+            ScreenCaptureService.setProjectionData(captureCode, captureData);
 
-        running = true;
-        btnToggle.setText("⏹  DỪNG BẢO VỆ");
-        btnToggle.setBackgroundTintList(getColorStateList(android.R.color.holo_red_light));
+            Intent svc = new Intent(this, ScreenCaptureService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(svc);
+            } else {
+                startService(svc);
+            }
 
-        // Load saved templates vào service sau khi service khởi động
-        mainHandler.postDelayed(this::loadTemplatesIntoService, 1500);
+            running = true;
+            btnToggle.setText("⏹  DỪNG BẢO VỆ");
+            btnToggle.setBackgroundTintList(getColorStateList(android.R.color.holo_red_light));
 
-        log("▶️ Dịch vụ bắt đầu — 1Hz scan, 1s delay click");
+            // Load templates vào service sau khi service khởi động xong
+            mainHandler.postDelayed(this::loadTemplatesIntoService, 2000);
+
+            log("▶️ Dịch vụ bắt đầu — Template:1s, YOLO:3s, click sau 1s");
+
+        } catch (Exception e) {
+            log("❌ Lỗi khởi động service: " + e.getMessage());
+            Toast.makeText(this, "Lỗi: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void stopAdSkipper() {
-        stopService(new Intent(this, ScreenCaptureService.class));
+        try {
+            stopService(new Intent(this, ScreenCaptureService.class));
+        } catch (Exception e) {
+            Log.e("MainActivity", "Stop service error: " + e.getMessage());
+        }
         running = false;
         btnToggle.setText("▶  BẮT ĐẦU BẢO VỆ");
         btnToggle.setBackgroundTintList(getColorStateList(R.color.colorAccent));
         log("⏹ Dịch vụ đã dừng");
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // TEMPLATE HELPERS
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     private void loadTemplateFromUri(Uri uri) {
         try {
@@ -303,10 +356,13 @@ public class MainActivity extends AppCompatActivity {
             updateTemplateCount();
 
             ScreenCaptureService svc = ScreenCaptureService.getInstance();
-            if (svc != null) svc.addTemplate(name, bmp);
-            else bmp.recycle();
+            if (svc != null) {
+                svc.addTemplate(name, bmp);
+            } else {
+                bmp.recycle();
+            }
 
-            log("📷 Template #" + templateCount + " (" + bmp.getWidth() + "×" + bmp.getHeight() + ")");
+            log("📷 Template #" + templateCount + " đã thêm (" + bmp.getWidth() + "×" + bmp.getHeight() + ")");
             Toast.makeText(this, "✅ Template đã thêm!", Toast.LENGTH_SHORT).show();
 
         } catch (Exception e) {
@@ -322,7 +378,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void loadTemplatesIntoService() {
         ScreenCaptureService svc = ScreenCaptureService.getInstance();
-        if (svc == null) return;
+        if (svc == null) {
+            log("⚠️ Service chưa sẵn sàng để load templates — thử lại sau 1s");
+            mainHandler.postDelayed(this::loadTemplatesIntoService, 1000);
+            return;
+        }
         int loaded = 0;
         for (int i = 1; i <= templateCount; i++) {
             try {
@@ -348,22 +408,31 @@ public class MainActivity extends AppCompatActivity {
             txtTemplateCount.setText(templateCount + " ảnh");
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // STATUS
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     private void updateStatuses() {
+        // Accessibility
         boolean acc = isAccessibilityOn();
         setStatus(dotA, txtAStatus, acc, acc ? "Đang hoạt động" : "Chưa bật");
 
+        // Screen capture
+        boolean captured = (captureCode != 0 && captureData != null);
+        setStatus(dotC, txtCStatus, captured, captured ? "Đã cấp phép" : "Chưa cấp");
+
+        // Overlay
         boolean overlay = Settings.canDrawOverlays(this);
         setStatus(dotOverlay, txtOverlayStatus, overlay,
-            overlay ? "Đã cấp phép" : "Chưa cấp — nhấn để cấp");
+            overlay ? "Đã cấp phép" : "Chưa cấp — nhấn Bước 3");
 
-        String key = prefs.getString(KEY_API, "");
-        boolean hasKey = !TextUtils.isEmpty(key);
-        setStatus(dotAI, txtAIStatus, hasKey,
-            hasKey ? "Sẵn sàng (fallback)" : "Không dùng (tùy chọn)");
+        // AI status: KHÔNG ghi đè nếu service đang chạy
+        // Chỉ hiển thị "On-Device" vì YOLO luôn thử load từ assets
+        // Kết quả thực tế sẽ được broadcast từ service
+        if (!running) {
+            setStatus(dotAI, txtAIStatus, true, "On-Device (best.tflite)");
+        }
+        // Khi running: yoloStatusReceiver sẽ cập nhật
     }
 
     private void setStatus(View dot, TextView label, boolean ok, String text) {
@@ -382,9 +451,9 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) { return false; }
     }
 
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // LOGGING
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
 
     private void appendLog(String msg) {
         runOnUiThread(() -> {
@@ -394,6 +463,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    /** Alias để code lemon gọi log() như cũ */
     void log(String msg) { appendLog(msg); }
+
+    private static final String TAG = "MainActivity";
 }
