@@ -20,7 +20,7 @@ public class YoloDetector {
     private static final String TAG            = "YoloDetector";
     private static final String MODEL_ASSET    = "best.tflite";
     private static final int    INPUT_SIZE     = 640;
-    private static final float  CONF_THRESHOLD = 0.45f;
+    private static final float  CONF_THRESHOLD = 0.25f;
     private static final float  IOU_THRESHOLD  = 0.45f;
 
     public static class Detection {
@@ -68,7 +68,7 @@ public class YoloDetector {
     // Output buffer — YOLOv8 TFLite: [1, 4+nc, 8400]
     private float[][][] outputBuffer;
 
-    private String[] classNames = {"close_button", "x_button", "skip_button", "ad_close"};
+    private String[] classNames = {"X-Button", "cancel", "close", "close_point", "gb", "skip"};
 
     // ─── Init ────────────────────────────────────────────────────────────────
 
@@ -222,10 +222,15 @@ public class YoloDetector {
             // Code cũ viết: (cx - lbPadX) / (lbScale * origW)
             // => chia lbPadX theo cả lbScale*origW thay vì chỉ lbScale → SAI khi padding != 0
 
-            float x1 = clamp01( (cx - bw / 2f - lbPadX) / lbScale / origW );
-            float y1 = clamp01( (cy - bh / 2f - lbPadY) / lbScale / origH );
-            float x2 = clamp01( (cx + bw / 2f - lbPadX) / lbScale / origW );
-            float y2 = clamp01( (cy + bh / 2f - lbPadY) / lbScale / origH );
+            float cxPx = cx * INPUT_SIZE;
+            float cyPx = cy * INPUT_SIZE;
+            float bwPx = bw * INPUT_SIZE;
+            float bhPx = bh * INPUT_SIZE;
+
+            float x1 = clamp01( (cxPx - bwPx / 2f - lbPadX) / lbScale / origW );
+            float y1 = clamp01( (cyPx - bhPx / 2f - lbPadY) / lbScale / origH );
+            float x2 = clamp01( (cxPx + bwPx / 2f - lbPadX) / lbScale / origW );
+            float y2 = clamp01( (cyPx + bhPx / 2f - lbPadY) / lbScale / origH );
 
             if (x2 <= x1 || y2 <= y1) continue; // degenerate box
 

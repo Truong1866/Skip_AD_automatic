@@ -402,6 +402,8 @@ public class ScreenCaptureService extends Service {
         if (yoloDetector == null) return;
 
         List<YoloDetector.Detection> detections = yoloDetector.detect(frame);
+        log("🔍 YOLO raw: " + detections.size() + " detections");
+        for (YoloDetector.Detection d : detections) log("  → " + d);
         if (!detections.isEmpty()) {
             YoloDetector.Detection best = detections.get(0);
             for (YoloDetector.Detection d : detections)

@@ -27,7 +27,7 @@ public class TemplateMatcher {
     private static final String TAG = "TemplateMatcher";
 
     /** Ngưỡng NCC để coi là khớp — 0.85 = 85% tương đồng */
-    private static final float MATCH_THRESHOLD = 0.85f;
+    private static final float MATCH_THRESHOLD = 0.70f;
 
     // ─────────────────────────────────────────────────────────────
     // DATA CLASSES
