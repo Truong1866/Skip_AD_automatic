@@ -17,35 +17,53 @@ import java.util.List;
 
 public class YoloDetector {
 
-    private static final String TAG           = "YoloDetector";
-    private static final String MODEL_ASSET   = "best.tflite";
-    private static final int    INPUT_SIZE    = 640;
+    private static final String TAG            = "YoloDetector";
+    private static final String MODEL_ASSET    = "best.tflite";
+    private static final int    INPUT_SIZE     = 640;
     private static final float  CONF_THRESHOLD = 0.45f;
     private static final float  IOU_THRESHOLD  = 0.45f;
 
     public static class Detection {
-        public RectF  box;
+        public RectF  box;           // góc trên-trái / dưới-phải, ratio 0..1 so với ảnh gốc
         public float  confidence;
         public int    classId;
         public String label;
 
         public Detection(RectF box, float confidence, int classId, String label) {
-            this.box = box; this.confidence = confidence;
-            this.classId = classId; this.label = label;
+            this.box = box;
+            this.confidence = confidence;
+            this.classId = classId;
+            this.label = label;
         }
+
+        /**
+         * Tâm X của bounding box, ratio 0..1 so với chiều rộng ảnh gốc.
+         * Đây là điểm click mục tiêu.
+         */
         public float centerX() { return (box.left + box.right)  / 2f; }
+
+        /**
+         * Tâm Y của bounding box, ratio 0..1 so với chiều cao ảnh gốc.
+         * Đây là điểm click mục tiêu.
+         */
         public float centerY() { return (box.top  + box.bottom) / 2f; }
 
         @Override public String toString() {
-            return String.format("[%s] %.0f%% @ (%.2f,%.2f)-(%.2f,%.2f)",
-                    label, confidence * 100, box.left, box.top, box.right, box.bottom);
+            return String.format("[%s] %.0f%% center=(%.3f,%.3f) box=(%.3f,%.3f)-(%.3f,%.3f)",
+                    label, confidence * 100,
+                    centerX(), centerY(),
+                    box.left, box.top, box.right, box.bottom);
         }
     }
 
     private Interpreter tflite;
     private boolean     initialized = false;
-    private int         origW, origH;
-    private float       lbScale, lbPadX, lbPadY;
+
+    // Letterbox params — được set trong letterboxResize(), dùng lại trong postprocess()
+    private int   origW, origH;
+    private float lbScale;   // scale dùng để resize ảnh gốc vào INPUT_SIZE
+    private float lbPadX;    // padding pixel (horizontal) trong không gian 640×640
+    private float lbPadY;    // padding pixel (vertical)   trong không gian 640×640
 
     // Output buffer — YOLOv8 TFLite: [1, 4+nc, 8400]
     private float[][][] outputBuffer;
@@ -53,6 +71,7 @@ public class YoloDetector {
     private String[] classNames = {"close_button", "x_button", "skip_button", "ad_close"};
 
     // ─── Init ────────────────────────────────────────────────────────────────
+
     public boolean init(Context context) {
         try {
             MappedByteBuffer modelBuffer = FileUtil.loadMappedFile(context, MODEL_ASSET);
@@ -77,6 +96,7 @@ public class YoloDetector {
     }
 
     // ─── Detect ──────────────────────────────────────────────────────────────
+
     public List<Detection> detect(Bitmap bitmap) {
         if (!initialized) return Collections.emptyList();
 
@@ -96,18 +116,22 @@ public class YoloDetector {
 
     private Bitmap letterboxResize(Bitmap src, int size) {
         int   w = src.getWidth(), h = src.getHeight();
-        float scale = Math.min((float) size / w, (float) size / h);
-        int   nw = Math.round(w * scale), nh = Math.round(h * scale);
+        // scale sao cho cạnh dài nhất khớp INPUT_SIZE
+        lbScale = Math.min((float) size / w, (float) size / h);
+        int nw = Math.round(w * lbScale);
+        int nh = Math.round(h * lbScale);
 
         Bitmap scaled = Bitmap.createScaledBitmap(src, nw, nh, true);
         Bitmap out    = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         android.graphics.Canvas cv = new android.graphics.Canvas(out);
-        cv.drawColor(android.graphics.Color.rgb(114, 114, 114));
-        int px = (size - nw) / 2, py = (size - nh) / 2;
-        cv.drawBitmap(scaled, px, py, null);
+        cv.drawColor(android.graphics.Color.rgb(114, 114, 114)); // letterbox color
+
+        // padding để căn giữa ảnh trong khung 640×640
+        lbPadX = (size - nw) / 2f;
+        lbPadY = (size - nh) / 2f;
+        cv.drawBitmap(scaled, lbPadX, lbPadY, null);
         scaled.recycle();
 
-        lbScale = scale; lbPadX = px; lbPadY = py;
         return out;
     }
 
@@ -131,11 +155,26 @@ public class YoloDetector {
 
     // ─── Postprocess ─────────────────────────────────────────────────────────
 
+    /**
+     * Chuyển đổi output model → tọa độ ratio 0..1 so với ảnh gốc.
+     *
+     * Model output cx,cy,bw,bh là pixel trong không gian INPUT_SIZE (640×640)
+     * đã letterbox. Để ra ảnh gốc:
+     *
+     *   pixel_goc_x = (cx_lb - lbPadX) / lbScale
+     *   ratio_x     = pixel_goc_x / origW
+     *               = (cx_lb - lbPadX) / lbScale / origW
+     *
+     * Lưu ý: (cx - lbPadX) / (lbScale * origW) ≠ (cx - lbPadX) / lbScale / origW
+     * khi lbPadX != 0 vì thứ tự chia khác nhau — đây là lỗi trong code cũ.
+     */
     private List<Detection> postprocess(float[][][] raw) {
         int dim1 = raw[0].length;
         int dim2 = raw[0][0].length;
 
-        boolean transposed = (dim1 < dim2);
+        // YOLOv8: output shape có thể là [1, 4+nc, 8400] (transposed)
+        //         hoặc [1, 8400, 4+nc] (không transposed)
+        boolean transposed = (dim1 < dim2); // dim1 = 4+nc nếu transposed
         int numAnchors = transposed ? dim2 : dim1;
         int numAttrs   = transposed ? dim1 : dim2;
         int numClasses = numAttrs - 4;
@@ -146,6 +185,7 @@ public class YoloDetector {
         List<Integer>  classes = new ArrayList<>();
 
         for (int a = 0; a < numAnchors; a++) {
+            // cx, cy, bw, bh — tọa độ pixel trong không gian 640×640 letterbox
             float cx, cy, bw, bh, maxScore = 0;
             int   bestClass = 0;
 
@@ -167,10 +207,27 @@ public class YoloDetector {
 
             if (maxScore < CONF_THRESHOLD) continue;
 
-            float x1 = clamp01((cx - bw / 2 - lbPadX) / (lbScale * origW));
-            float y1 = clamp01((cy - bh / 2 - lbPadY) / (lbScale * origH));
-            float x2 = clamp01((cx + bw / 2 - lbPadX) / (lbScale * origW));
-            float y2 = clamp01((cy + bh / 2 - lbPadY) / (lbScale * origH));
+            // ── Chuyển từ không gian letterbox 640×640 → ratio ảnh gốc ──
+            //
+            // Bước 1: bỏ letterbox padding → pixel trong ảnh đã scale
+            //   x_scaled = cx - lbPadX  (đơn vị: pixel trong ảnh scaled nw×nh)
+            //
+            // Bước 2: bỏ scale → pixel trong ảnh gốc
+            //   x_orig = x_scaled / lbScale
+            //
+            // Bước 3: normalize → ratio
+            //   x_ratio = x_orig / origW
+            //           = (cx - lbPadX) / lbScale / origW
+            //
+            // Code cũ viết: (cx - lbPadX) / (lbScale * origW)
+            // => chia lbPadX theo cả lbScale*origW thay vì chỉ lbScale → SAI khi padding != 0
+
+            float x1 = clamp01( (cx - bw / 2f - lbPadX) / lbScale / origW );
+            float y1 = clamp01( (cy - bh / 2f - lbPadY) / lbScale / origH );
+            float x2 = clamp01( (cx + bw / 2f - lbPadX) / lbScale / origW );
+            float y2 = clamp01( (cy + bh / 2f - lbPadY) / lbScale / origH );
+
+            if (x2 <= x1 || y2 <= y1) continue; // degenerate box
 
             boxes.add(new float[]{x1, y1, x2, y2});
             scores.add(maxScore);
@@ -194,7 +251,8 @@ public class YoloDetector {
             float[] b  = boxes.get(ii);
             String lbl = (classes.get(ii) < classNames.length)
                     ? classNames[classes.get(ii)] : "cls_" + classes.get(ii);
-            out.add(new Detection(new RectF(b[0], b[1], b[2], b[3]),
+            out.add(new Detection(
+                    new RectF(b[0], b[1], b[2], b[3]),
                     scores.get(ii), classes.get(ii), lbl));
             for (int j = i + 1; j < idx.size(); j++) {
                 int jj = idx.get(j);
@@ -210,7 +268,7 @@ public class YoloDetector {
         float ix = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]));
         float iy = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
         float inter = ix * iy;
-        float ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter;
+        float ua = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter;
         return ua <= 0 ? 0 : inter / ua;
     }
 

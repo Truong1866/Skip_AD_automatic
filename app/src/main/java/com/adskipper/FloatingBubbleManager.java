@@ -372,21 +372,24 @@ public class FloatingBubbleManager {
 
     private void updateBubbleState() {
         if (bubbleView == null) return;
-        View ring         = bubbleView.findViewById(R.id.bubbleRing);
-        ImageView icon    = bubbleView.findViewById(R.id.bubbleIcon);
+        View ring = bubbleView.findViewById(R.id.bubbleRing);
+        // bubbleIcon giờ là icon app — không dùng colorFilter
         if (isPaused) {
             if (ring != null) {
                 ring.animate().cancel();
                 ring.setScaleX(1f); ring.setScaleY(1f);
                 ring.setAlpha(0.25f);
             }
-            if (icon != null) icon.setColorFilter(0xFF667788);
+            // Làm mờ icon app khi pause bằng alpha thay vì colorFilter
+            View icon = bubbleView.findViewById(R.id.bubbleIcon);
+            if (icon != null) icon.setAlpha(0.45f);
         } else {
             if (ring != null) {
                 ring.setAlpha(1f);
                 startPulseAnimation(ring);
             }
-            if (icon != null) icon.setColorFilter(0xFF00E5FF);
+            View icon = bubbleView.findViewById(R.id.bubbleIcon);
+            if (icon != null) icon.setAlpha(1f);
         }
     }
 

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Click ripple overlay: hiển thị vòng tròn mờ dần tại điểm được click
+    Được thêm vào WindowManager tạm thời, tự remove sau khi animation kết thúc
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rippleContainer"
+    android:layout_width="80dp"
+    android:layout_height="80dp">
+
+    <!-- Vòng ngoài (scale lớn + mờ dần) -->
+    <View
+        android:id="@+id/rippleOuter"
+        android:layout_width="80dp"
+        android:layout_height="80dp"
+        android:layout_gravity="center"
+        android:background="@drawable/ripple_outer" />
+
+    <!-- Vòng trong (scale vừa + mờ dần chậm hơn) -->
+    <View
+        android:id="@+id/rippleInner"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_gravity="center"
+        android:background="@drawable/ripple_inner" />
+
+    <!-- Chấm trung tâm (nhỏ, fade out cuối) -->
+    <View
+        android:id="@+id/rippleDot"
+        android:layout_width="12dp"
+        android:layout_height="12dp"
+        android:layout_gravity="center"
+        android:background="@drawable/ripple_dot" />
+
+</FrameLayout>

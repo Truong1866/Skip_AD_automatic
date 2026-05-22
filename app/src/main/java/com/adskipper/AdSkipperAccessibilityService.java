@@ -6,6 +6,9 @@ import android.content.Intent;
 import android.graphics.Path;
 import android.graphics.Point;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.Display;
 import android.view.WindowManager;
@@ -16,6 +19,10 @@ public class AdSkipperAccessibilityService extends AccessibilityService {
 
     private static final String TAG = "A11yService";
     private static AdSkipperAccessibilityService instance;
+
+    /** Ripple overlay — khởi tạo lazy khi cần, null nếu chưa có quyền overlay */
+    private ClickRippleOverlay rippleOverlay;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onServiceConnected() {
@@ -31,15 +38,24 @@ public class AdSkipperAccessibilityService extends AccessibilityService {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        rippleOverlay = null;
         instance = null;
     }
 
     public static AdSkipperAccessibilityService getInstance() { return instance; }
 
+    // ─────────────────────────────────────────────────────────────
+    // CLICK — với ripple animation
+    // ─────────────────────────────────────────────────────────────
+
     /**
-     * Click tại tọa độ pixel tuyệt đối trên màn hình
+     * Click tại tọa độ pixel tuyệt đối trên màn hình.
+     * Hiển thị ripple animation tại điểm click nếu có quyền overlay.
      */
     public void performClick(int x, int y, GestureResultCallback callback) {
+        // Hiện ripple TRƯỚC khi gesture để người dùng thấy ngay
+        showRipple(x, y);
+
         Path path = new Path();
         path.moveTo(x, y);
         GestureDescription.StrokeDescription stroke =
@@ -68,6 +84,34 @@ public class AdSkipperAccessibilityService extends AccessibilityService {
         Log.d(TAG, String.format("Click ratio (%.3f,%.3f) → pixel (%d,%d)", xRatio, yRatio, px, py));
         performClick(px, py, null);
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // RIPPLE
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Hiển thị vòng tròn mờ dần tại điểm click.
+     * Chỉ chạy nếu có quyền SYSTEM_ALERT_WINDOW.
+     * Gọi từ main thread (đảm bảo bằng mainHandler.post).
+     */
+    private void showRipple(int x, int y) {
+        if (!Settings.canDrawOverlays(this)) return;
+
+        mainHandler.post(() -> {
+            try {
+                if (rippleOverlay == null) {
+                    rippleOverlay = new ClickRippleOverlay(this);
+                }
+                rippleOverlay.show(x, y);
+            } catch (Exception e) {
+                Log.e(TAG, "Ripple error: " + e.getMessage());
+            }
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SCREEN SIZE
+    // ─────────────────────────────────────────────────────────────
 
     public Point getScreenSize() {
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);

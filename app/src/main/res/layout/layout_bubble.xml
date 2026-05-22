@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Bubble layout: vòng pulse bên ngoài + nền tròn + icon trung tâm + badge nhỏ
+    Bubble layout: vòng pulse bên ngoài + nền tròn + icon app + badge nhỏ
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="64dp"
@@ -22,14 +22,13 @@
         android:background="@drawable/bubble_bg"
         android:elevation="8dp">
 
-        <!-- Icon: dùng ImageView để hỗ trợ setColorFilter từ Java -->
+        <!-- Icon app thay vì system icon -->
         <ImageView
             android:id="@+id/bubbleIcon"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
             android:layout_gravity="center"
-            android:src="@android:drawable/ic_menu_close_clear_cancel"
-            android:color ="#00E5FF"
+            android:src="@mipmap/ic_launcher"
             android:scaleType="fitCenter" />
 
     </FrameLayout>
